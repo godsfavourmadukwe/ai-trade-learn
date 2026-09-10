@@ -5,12 +5,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
 import { useNavigate } from "react-router";
+import { useMarketData } from "@/hooks/use-market-data";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { PerformanceChart } from "@/components/dashboard/PerformanceChart";
+import { PriceChart } from "@/components/dashboard/PriceChart";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { SignalList } from "@/components/dashboard/SignalList";
 import { StrategyConfig } from "@/components/dashboard/StrategyConfig";
 import { RiskPanel } from "@/components/dashboard/RiskPanel";
+import { SettingsTab } from "@/components/dashboard/SettingsTab";
 import { 
   LogOut, 
   TrendingUp, 
@@ -30,22 +33,9 @@ import {
   ArrowDownRight,
   Globe,
   Star,
-  Sparkles
+  Sparkles,
+  Clock
 } from "lucide-react";
-
-// Demo currency pairs with more data
-const currencyPairs = [
-  { symbol: "BTC/USDT", name: "Bitcoin", price: 67450.25, change24h: 2.45, volume: "28.5B", marketCap: "1.32T", trend: "bullish" as const },
-  { symbol: "ETH/USDT", name: "Ethereum", price: 3542.80, change24h: 3.12, volume: "15.2B", marketCap: "425B", trend: "bullish" as const },
-  { symbol: "SOL/USDT", name: "Solana", price: 148.65, change24h: -1.23, volume: "3.8B", marketCap: "65.4B", trend: "bearish" as const },
-  { symbol: "BNB/USDT", name: "BNB", price: 584.30, change24h: 0.89, volume: "2.1B", marketCap: "89.2B", trend: "bullish" as const },
-  { symbol: "XRP/USDT", name: "XRP", price: 0.5234, change24h: 1.56, volume: "1.9B", marketCap: "28.5B", trend: "bullish" as const },
-  { symbol: "ADA/USDT", name: "Cardano", price: 0.4521, change24h: -0.67, volume: "0.8B", marketCap: "15.9B", trend: "bearish" as const },
-  { symbol: "DOGE/USDT", name: "Dogecoin", price: 0.1234, change24h: 4.56, volume: "1.2B", marketCap: "17.6B", trend: "bullish" as const },
-  { symbol: "AVAX/USDT", name: "Avalanche", price: 35.42, change24h: 2.89, volume: "0.9B", marketCap: "13.2B", trend: "bullish" as const },
-  { symbol: "DOT/USDT", name: "Polkadot", price: 7.89, change24h: -0.34, volume: "0.5B", marketCap: "10.5B", trend: "neutral" as const },
-  { symbol: "LINK/USDT", name: "Chainlink", price: 14.56, change24h: 1.23, volume: "0.7B", marketCap: "8.6B", trend: "bullish" as const },
-];
 
 // Demo data for visualization
 const generateDemoData = () => {
@@ -104,17 +94,26 @@ const defaultStrategy = {
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+  const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket } = useMarketData(30000);
+  
   const [equityData, setEquityData] = useState<number[]>([]);
   const [drawdownData, setDrawdownData] = useState<number[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [activeTab, setActiveTab] = useState("markets");
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedPair, setSelectedPair] = useState(currencyPairs[0]);
+  const [selectedPair, setSelectedPair] = useState<string>("BTC/USDT");
 
   useEffect(() => {
     setEquityData(generateDemoData());
     setDrawdownData(generateDemoData().map((v) => Math.min(0, (v - 10000) / 100)));
   }, []);
+
+  // Auto-select first pair when data loads
+  useEffect(() => {
+    if (marketData.length > 0 && !marketData.find(p => p.symbol === selectedPair)) {
+      setSelectedPair(marketData[0].symbol);
+    }
+  }, [marketData, selectedPair]);
 
   const handleSignOut = async () => {
     await signOut();
@@ -125,16 +124,32 @@ export default function Dashboard() {
     console.log("Saving strategy params:", params);
   };
 
-  const filteredPairs = currencyPairs.filter(
+  const handleSaveSettings = (config: { coingeckoApiKey: string; binanceApiKey: string; binanceApiSecret: string; openaiApiKey: string }) => {
+    console.log("Saving settings:", config);
+    // Store in localStorage for demo
+    localStorage.setItem("tradslly_api_config", JSON.stringify(config));
+  };
+
+  const filteredPairs = marketData.filter(
     (pair) =>
       pair.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
       pair.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const selectedPairData = marketData.find(p => p.symbol === selectedPair);
+
   const formatPrice = (price: number) => {
     if (price < 1) return `$${price.toFixed(4)}`;
     if (price < 100) return `$${price.toFixed(2)}`;
     return `$${price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const formatTime = (timestamp: number | null) => {
+    if (!timestamp) return "Never";
+    const diff = Date.now() - timestamp;
+    if (diff < 60000) return "Just now";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    return new Date(timestamp).toLocaleTimeString();
   };
 
   return (
@@ -157,7 +172,13 @@ export default function Dashboard() {
               </div>
               <div className="hidden md:flex items-center gap-3">
                 <StatusBadge status={isRunning ? "active" : "inactive"} label={isRunning ? "Bot Active" : "Bot Paused"} />
-                <StatusBadge status="success" label={selectedPair.symbol} />
+                <StatusBadge status={marketError ? "error" : marketLoading ? "warning" : "success"} label={marketError ? "API Error" : marketLoading ? "Loading..." : "Live Data"} />
+                {lastFetch && (
+                  <span className="text-xs text-zinc-500 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    Updated {formatTime(lastFetch)}
+                  </span>
+                )}
               </div>
             </div>
             
@@ -218,34 +239,113 @@ export default function Dashboard() {
               <Shield className="w-4 h-4 mr-2" />
               Risk
             </TabsTrigger>
+            <TabsTrigger value="settings" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-zinc-500/30 data-[state=active]:to-zinc-400/30 data-[state=active]:text-white font-semibold">
+              <Settings className="w-4 h-4 mr-2" />
+              Settings
+            </TabsTrigger>
           </TabsList>
 
-          {/* Markets Tab - Currency Pair Catalog */}
+          {/* Markets Tab - Currency Pair Catalog with Real-Time Data */}
           <TabsContent value="markets" className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-extrabold text-white">Browse Markets</h2>
                 <p className="text-zinc-400">Select currency pairs to analyze and trade</p>
               </div>
-              <div className="relative w-full md:w-96">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" />
-                <Input
-                  placeholder="Search pairs (e.g., BTC, ETH)..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 bg-white/[0.03] border-white/10 h-12 text-white placeholder:text-zinc-500 focus:border-violet-500/50 focus:ring-violet-500/20"
-                />
+              <div className="flex items-center gap-3">
+                <div className="relative w-72">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" />
+                  <Input
+                    placeholder="Search pairs..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-10 bg-white/[0.03] border-white/10 h-12 text-white placeholder:text-zinc-500 focus:border-violet-500/50 focus:ring-violet-500/20"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={refreshMarket}
+                  disabled={marketLoading}
+                  className="h-12 w-12 border-white/10 hover:bg-white/[0.05]"
+                >
+                  <RefreshCw className={`w-5 h-5 ${marketLoading ? "animate-spin" : ""}`} />
+                </Button>
               </div>
             </div>
 
+            {/* Selected Pair Detail with Chart */}
+            {selectedPairData && (
+              <Card className="bg-[#111118] border-white/[0.08]">
+                <CardContent className="p-6">
+                  <div className="flex flex-col lg:flex-row gap-6">
+                    <div className="lg:w-1/3">
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500/20 to-cyan-500/20 flex items-center justify-center">
+                          <span className="text-lg font-bold text-white">{selectedPairData.symbol.split('/')[0]}</span>
+                        </div>
+                        <div>
+                          <h3 className="text-2xl font-extrabold text-white">{selectedPairData.symbol}</h3>
+                          <p className="text-zinc-400">{selectedPairData.name}</p>
+                        </div>
+                      </div>
+                      
+                      <div className="text-4xl font-extrabold text-white mb-2">
+                        {formatPrice(selectedPairData.price)}
+                      </div>
+                      
+                      <div className={`text-lg font-bold ${
+                        selectedPairData.change24hPercent >= 0 ? "text-emerald-400" : "text-rose-400"
+                      }`}>
+                        {selectedPairData.change24hPercent >= 0 ? "+" : ""}{selectedPairData.change24hPercent.toFixed(2)}%
+                        <span className="text-sm text-zinc-500 ml-2">(24h)</span>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4 mt-6 text-sm">
+                        <div>
+                          <span className="text-zinc-500">24h High</span>
+                          <div className="font-bold text-white">{formatPrice(selectedPairData.high24h)}</div>
+                        </div>
+                        <div>
+                          <span className="text-zinc-500">24h Low</span>
+                          <div className="font-bold text-white">{formatPrice(selectedPairData.low24h)}</div>
+                        </div>
+                        <div>
+                          <span className="text-zinc-500">Volume</span>
+                          <div className="font-bold text-white">${(selectedPairData.volume / 1000000000).toFixed(2)}B</div>
+                        </div>
+                        <div>
+                          <span className="text-zinc-500">Market Cap</span>
+                          <div className="font-bold text-white">${(selectedPairData.marketCap / 1000000000).toFixed(2)}B</div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="lg:w-2/3">
+                      <div className="flex items-center justify-between mb-4">
+                        <h4 className="text-sm font-bold text-zinc-300">Price Chart (Simulated)</h4>
+                        <StatusBadge status="success" label="Live" />
+                      </div>
+                      <PriceChart
+                        data={selectedPairData.priceHistory}
+                        currentPrice={selectedPairData.price}
+                        height={280}
+                      />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Pairs Grid */}
             <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {filteredPairs.map((pair) => (
                 <Card
                   key={pair.symbol}
                   className={`bg-[#111118] border-white/[0.08] hover:border-white/[0.2] transition-all cursor-pointer group ${
-                    selectedPair.symbol === pair.symbol ? "border-violet-500/50 shadow-lg shadow-violet-500/10" : ""
+                    selectedPair === pair.symbol ? "border-violet-500/50 shadow-lg shadow-violet-500/10" : ""
                   }`}
-                  onClick={() => setSelectedPair(pair)}
+                  onClick={() => setSelectedPair(pair.symbol)}
                 >
                   <CardContent className="p-5">
                     <div className="flex items-start justify-between mb-4">
@@ -256,19 +356,29 @@ export default function Dashboard() {
                         <p className="text-sm text-zinc-500">{pair.name}</p>
                       </div>
                       <div className={`p-2 rounded-xl ${
-                        pair.change24h >= 0 
+                        pair.change24hPercent >= 0 
                           ? "bg-emerald-500/10" 
                           : "bg-rose-500/10"
                       }`}>
-                        {pair.change24h >= 0 ? (
-                          <ArrowUpRight className={`w-5 h-5 ${pair.change24h >= 0 ? "text-emerald-400" : "text-rose-400"}`} />
+                        {pair.change24hPercent >= 0 ? (
+                          <ArrowUpRight className="w-5 h-5 text-emerald-400" />
                         ) : (
                           <ArrowDownRight className="w-5 h-5 text-rose-400" />
                         )}
                       </div>
                     </div>
                     
-                    <div className="space-y-3">
+                    <div className="mb-4">
+                      <PriceChart
+                        data={pair.priceHistory}
+                        height={60}
+                        showGrid={false}
+                        showLabels={false}
+                        showGradient={true}
+                      />
+                    </div>
+                    
+                    <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-sm text-zinc-500">Price</span>
                         <span className="text-lg font-bold text-white">{formatPrice(pair.price)}</span>
@@ -276,25 +386,17 @@ export default function Dashboard() {
                       <div className="flex items-center justify-between">
                         <span className="text-sm text-zinc-500">24h Change</span>
                         <span className={`text-sm font-bold ${
-                          pair.change24h >= 0 ? "text-emerald-400" : "text-rose-400"
+                          pair.change24hPercent >= 0 ? "text-emerald-400" : "text-rose-400"
                         }`}>
-                          {pair.change24h >= 0 ? "+" : ""}{pair.change24h}%
+                          {pair.change24hPercent >= 0 ? "+" : ""}{pair.change24hPercent.toFixed(2)}%
                         </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-zinc-500">Volume</span>
-                        <span className="text-sm font-medium text-zinc-300">{pair.volume}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-zinc-500">Market Cap</span>
-                        <span className="text-sm font-medium text-zinc-300">{pair.marketCap}</span>
                       </div>
                     </div>
                     
                     <div className="mt-4 pt-4 border-t border-white/[0.05] flex items-center justify-between">
                       <StatusBadge 
-                        status={pair.trend === "bullish" ? "success" : pair.trend === "bearish" ? "error" : "inactive"} 
-                        label={pair.trend.charAt(0).toUpperCase() + pair.trend.slice(1)} 
+                        status={pair.change24hPercent >= 0 ? "success" : "error"} 
+                        label={pair.change24hPercent >= 0 ? "Bullish" : "Bearish"} 
                       />
                       <Button 
                         variant="ghost" 
@@ -376,33 +478,37 @@ export default function Dashboard() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-3">
-                        <span className="text-lg font-bold text-white">{selectedPair.symbol}</span>
-                        <StatusBadge status="success" label="Long" />
+                  {selectedPairData ? (
+                    <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <span className="text-lg font-bold text-white">{selectedPairData.symbol}</span>
+                          <StatusBadge status="success" label="Long" />
+                        </div>
+                        <span className="text-emerald-400 font-bold">+$145.20</span>
                       </div>
-                      <span className="text-emerald-400 font-bold">+$145.20</span>
+                      <div className="grid grid-cols-4 gap-4 text-sm">
+                        <div>
+                          <span className="text-zinc-500">Entry</span>
+                          <div className="font-medium text-white">{formatPrice(selectedPairData.price - 200)}</div>
+                        </div>
+                        <div>
+                          <span className="text-zinc-500">Current</span>
+                          <div className="font-medium text-emerald-400">{formatPrice(selectedPairData.price)}</div>
+                        </div>
+                        <div>
+                          <span className="text-zinc-500">Stop</span>
+                          <div className="font-medium text-rose-400">{formatPrice(selectedPairData.price - 850)}</div>
+                        </div>
+                        <div>
+                          <span className="text-zinc-500">Target</span>
+                          <div className="font-medium text-emerald-400">{formatPrice(selectedPairData.price + 1700)}</div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="grid grid-cols-4 gap-4 text-sm">
-                      <div>
-                        <span className="text-zinc-500">Entry</span>
-                        <div className="font-medium text-white">{formatPrice(selectedPair.price - 200)}</div>
-                      </div>
-                      <div>
-                        <span className="text-zinc-500">Current</span>
-                        <div className="font-medium text-emerald-400">{formatPrice(selectedPair.price)}</div>
-                      </div>
-                      <div>
-                        <span className="text-zinc-500">Stop</span>
-                        <div className="font-medium text-rose-400">{formatPrice(selectedPair.price - 850)}</div>
-                      </div>
-                      <div>
-                        <span className="text-zinc-500">Target</span>
-                        <div className="font-medium text-emerald-400">{formatPrice(selectedPair.price + 1700)}</div>
-                      </div>
-                    </div>
-                  </div>
+                  ) : (
+                    <div className="text-center py-8 text-zinc-500">Select a pair to view positions</div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -440,13 +546,20 @@ export default function Dashboard() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2">
-                    {currencyPairs.slice(0, 4).map((pair) => (
-                      <div key={pair.symbol} className="flex items-center justify-between py-1">
+                    {marketData.slice(0, 4).map((pair) => (
+                      <div 
+                        key={pair.symbol} 
+                        className="flex items-center justify-between py-1 cursor-pointer hover:bg-white/[0.03] px-2 rounded"
+                        onClick={() => {
+                          setSelectedPair(pair.symbol);
+                          setActiveTab("markets");
+                        }}
+                      >
                         <span className="text-sm text-zinc-300">{pair.symbol}</span>
                         <span className={`text-xs font-bold ${
-                          pair.change24h >= 0 ? "text-emerald-400" : "text-rose-400"
+                          pair.change24hPercent >= 0 ? "text-emerald-400" : "text-rose-400"
                         }`}>
-                          {pair.change24h >= 0 ? "+" : ""}{pair.change24h}%
+                          {pair.change24hPercent >= 0 ? "+" : ""}{pair.change24hPercent.toFixed(2)}%
                         </span>
                       </div>
                     ))}
@@ -589,13 +702,13 @@ export default function Dashboard() {
                   <CardContent>
                     <div className="space-y-3">
                       {[
-                        { regime: "Trending", trades: 18, winRate: "72%", expectancy: "+$45.20", color: "emerald" },
-                        { regime: "Breakout", trades: 12, winRate: "65%", expectancy: "+$38.90", color: "cyan" },
-                        { regime: "Momentum", trades: 17, winRate: "58%", expectancy: "+$28.40", color: "violet" },
+                        { regime: "Trending", trades: 18, winRate: "72%", expectancy: "+$45.20" },
+                        { regime: "Breakout", trades: 12, winRate: "65%", expectancy: "+$38.90" },
+                        { regime: "Momentum", trades: 17, winRate: "58%", expectancy: "+$28.40" },
                       ].map((data) => (
                         <div
                           key={data.regime}
-                          className={`p-3 rounded-xl bg-${data.color}-500/5 border border-${data.color}-500/20`}
+                          className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.08]"
                         >
                           <div className="flex items-center justify-between mb-2">
                             <span className="text-sm font-bold text-white">{data.regime}</span>
@@ -719,6 +832,11 @@ export default function Dashboard() {
                 </div>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Settings Tab */}
+          <TabsContent value="settings" className="space-y-6">
+            <SettingsTab onSave={handleSaveSettings} />
           </TabsContent>
         </Tabs>
       </div>
