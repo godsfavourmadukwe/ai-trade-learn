@@ -23,10 +23,10 @@ export class CandleStore {
   private seenClosedIds = new Set<string>();
   private maxCandles: number;
 
-  constructor(
-    public readonly key: CandleKey,
-    maxCandles = 720,
-  ) {
+  readonly key: CandleKey;
+
+  constructor(key: CandleKey, maxCandles = 720) {
+    this.key = key;
     this.maxCandles = maxCandles;
   }
 

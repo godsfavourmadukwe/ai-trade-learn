@@ -33,10 +33,12 @@ interface SettingsTabProps {
   onSave: (config: ApiConfig) => void;
   currentDataSource?: string;
   refreshInterval?: number;
-  apiStatus?: Record<string, "connected" | "error" | "loading">;
+  feedHealth?: "connecting" | "connected" | "reconnecting" | "stale" | "error";
+  activeProvider?: string;
+  tickAgeMs?: number;
 }
 
-export function SettingsTab({ onSave, currentDataSource, refreshInterval = 1, apiStatus = {} }: SettingsTabProps) {
+export function SettingsTab({ onSave, currentDataSource, refreshInterval = 1, feedHealth = "connecting", activeProvider = "—", tickAgeMs = 0 }: SettingsTabProps) {
   const [config, setConfig] = useState<ApiConfig>({
     binanceApiKey: "",
     binanceApiSecret: "",
@@ -117,11 +119,7 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 1, ap
     localStorage.setItem("tradslly_api_config", JSON.stringify(config));
   };
 
-  const getStatusForService = (key: string): "connected" | "error" | "loading" => {
-    return apiStatus[key] || "loading";
-  };
-
-  const connectedCount = Object.values(apiStatus).filter(s => s === "connected").length;
+  const connectedCount = feedHealth === "connected" ? 2 : feedHealth === "reconnecting" || feedHealth === "stale" ? 1 : 0;
 
   return (
     <div className="space-y-6">
@@ -142,33 +140,35 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 1, ap
                 </div>
                 <div>
                   <h4 className="text-sm font-bold text-white">
-                    {connectedCount} / 6 APIs Active
+                    {activeProvider === "—" ? "Connecting…" : `Active feed: ${activeProvider}`}
                   </h4>
-                  <p className="text-xs text-zinc-400">Aggregated for accuracy</p>
+                  <p className="text-xs text-zinc-400">WebSocket market stream</p>
                 </div>
               </div>
             </div>
-            
+
             <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
                   <Clock className="w-5 h-5 text-cyan-400" />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-white">1-Second Updates</h4>
-                  <p className="text-xs text-zinc-400">Real-time price feed</p>
+                  <h4 className="text-sm font-bold text-white">
+                    {feedHealth === "connected" ? "Real-time (event-driven)" : feedHealth === "error" ? "Disconnected — retrying" : "Reconnecting…"}
+                  </h4>
+                  <p className="text-xs text-zinc-400">Data age: {tickAgeMs < 2000 ? "live" : `${Math.round(tickAgeMs / 1000)}s`}</p>
                 </div>
               </div>
             </div>
-            
+
             <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-emerald-500/20 flex items-center justify-center">
                   <Zap className="w-5 h-5 text-emerald-400" />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-white">Median Price</h4>
-                  <p className="text-xs text-zinc-400">Cross-exchange validation</p>
+                  <h4 className="text-sm font-bold text-white">Streams: trades · klines · ticker</h4>
+                  <p className="text-xs text-zinc-400">Candles aggregate server-side</p>
                 </div>
               </div>
             </div>
@@ -187,7 +187,10 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 1, ap
         <CardContent>
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
             {services.map(service => {
-              const status = getStatusForService(service.key);
+              const isFeed = service.isPrimary;
+              const status: "connected" | "error" | "loading" = isFeed
+                ? feedHealth === "connected" ? "connected" : feedHealth === "error" ? "error" : "loading"
+                : "connected"; // historical providers resolve on demand; treat as available
               return (
                 <div
                   key={service.key}
@@ -230,25 +233,25 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 1, ap
         </CardContent>
       </Card>
 
-      {/* How Aggregation Works */}
+      {/* How the Live Pipeline Works */}
       <Card className="bg-[#111118] border-white/[0.08]">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
             <Zap className="w-4 h-4 text-amber-400" />
-            Price Aggregation Method
+            How the Live Pipeline Works
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
             <p className="text-sm text-zinc-400 mb-4">
-              TRADSLY aggregates prices from all 6 APIs simultaneously and uses the <span className="text-white font-bold">median price</span> for maximum accuracy. This cross-validation prevents manipulation and ensures you get the true market price.
+              TRADSLY connects directly to exchange WebSockets. Trades, klines and 24h ticker snapshots stream in as they happen — the chart updates the moment the exchange publishes a new price, with no polling delay. Historical candles load once over REST for context, and any gap after a reconnect is detected and backfilled automatically.
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
-                { label: "Data Sources", value: "6 APIs" },
-                { label: "Update Speed", value: "1 second" },
-                { label: "Validation", value: "Median" },
-                { label: "Fallback", value: "Auto" },
+                { label: "Primary Feed", value: "Binance WS" },
+                { label: "Failover Feed", value: "Bybit WS" },
+                { label: "Update Speed", value: "Real-time" },
+                { label: "Gap Repair", value: "Automatic" },
               ].map(item => (
                 <div key={item.label} className="text-center p-3 rounded-lg bg-white/[0.02]">
                   <div className="text-xs text-zinc-500">{item.label}</div>
@@ -469,7 +472,7 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 1, ap
           <div className="space-y-3 text-sm text-zinc-400">
             <div className="flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-              <p>Market data from all 6 APIs is free and requires no authentication.</p>
+              <p>Live market data streams over WebSocket with no API keys. Trading keys are only needed to place orders.</p>
             </div>
             <div className="flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />

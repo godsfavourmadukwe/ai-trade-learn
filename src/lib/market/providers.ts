@@ -1,11 +1,13 @@
 import {
   type BookTopEvent,
+  type Candle,
   type Diagnostics,
   type FeedHealth,
   type HistoricalCandlesResult,
   type Interval,
   type KlineEvent,
   type MarketDataProvider,
+  type TickerEvent,
   type TickEvent,
   alignTime,
   isValidCandle,
@@ -25,6 +27,7 @@ export abstract class BaseProvider implements MarketDataProvider {
   onKline?: (ev: KlineEvent) => void;
   onTick?: (ev: TickEvent) => void;
   onBookTop?: (ev: BookTopEvent) => void;
+  onTicker?: (ev: TickerEvent) => void;
   onHealth?: (health: FeedHealth, detail?: string) => void;
   onReconnect?: (lastEventTimeBeforeDrop: number | null) => void;
 
@@ -54,6 +57,8 @@ export abstract class BaseProvider implements MarketDataProvider {
   protected abstract restKlineUrl(symbol: string, interval: Interval, limit: number): string;
   protected abstract parseKlineArray(a: unknown[]): Candle | null;
   abstract getLatestPrice(symbol: string): number | null;
+  abstract subscribeSymbols(symbols: string[], intervals: Interval[]): void;
+  abstract unsubscribeSymbols(symbols: string[], intervals: Interval[]): void;
 
   connect(): void {
     if (this.ws) return;
@@ -172,6 +177,11 @@ export abstract class BaseProvider implements MarketDataProvider {
     this.onBookTop?.(ev);
   }
 
+  protected emitTicker(ev: TickerEvent): void {
+    this.diagnostics.lastEventTime = ev.eventTime;
+    this.onTicker?.(ev);
+  }
+
   // ---- REST history with server-time sync + validation ----
   async getHistoricalCandles(symbol: string, interval: Interval, limit: number): Promise<HistoricalCandlesResult> {
     const t0 = Date.now();
@@ -248,6 +258,7 @@ export class BinanceProvider extends BaseProvider {
       const lower = s.toLowerCase();
       streams.push(`${lower}@aggTrade`);
       streams.push(`${lower}@bookTicker`);
+      streams.push(`${lower}@ticker`);
       for (const iv of this.intervals) streams.push(`${lower}@kline_${iv}`);
     }
     this.ws.send(JSON.stringify({ method: "SUBSCRIBE", params: streams, id: Date.now() % 1e9 }));
@@ -287,6 +298,26 @@ export class BinanceProvider extends BaseProvider {
       this.emitBookTop({
         symbol, bid, bidQty: Number(d.B) || 0, ask, askQty: Number(d.A) || 0,
         eventTime: receiveTime, receivedTime: receiveTime, source: this.name,
+      });
+      return;
+    }
+
+    if (msg.stream.endsWith("@ticker")) {
+      const symbol = String(d.s ?? "").toUpperCase();
+      const last = Number(d.c);
+      if (!Number.isFinite(last) || last <= 0) { this.diagnostics.invalidMessages++; return; }
+      this.emitTicker({
+        symbol,
+        lastPrice: last,
+        priceChangePercent24h: Number(d.P) || 0,
+        high24h: Number(d.h) || last,
+        low24h: Number(d.l) || last,
+        volume24hBase: Number(d.v) || 0,
+        quoteVolume24h: Number(d.q) || 0,
+        openPrice24h: Number(d.o) || last,
+        eventTime: Number(d.E) || receiveTime,
+        receivedTime: receiveTime,
+        source: this.name,
       });
       return;
     }
@@ -411,6 +442,34 @@ export class BybitProvider extends BaseProvider {
       return;
     }
 
+    if (topic.startsWith("tickers.")) {
+      // Bybit spot tickers push lastPrice frequently; full 24h fields on snapshot
+      const d = msg.data as Record<string, unknown> | undefined;
+      if (!d) { this.diagnostics.invalidMessages++; return; }
+      const symbol = topic.split(".")[1] ?? "";
+      const last = Number(d.lastPrice);
+      if (!Number.isFinite(last) || last <= 0) { this.diagnostics.invalidMessages++; return; }
+      const open = Number(d.price24hAgo ?? d.openPrice ?? 0);
+      const high = Number(d.highPrice24h ?? 0);
+      const low = Number(d.lowPrice24h ?? 0);
+      const turnover = Number(d.turnover24h ?? 0);
+      this.emitTicker({
+        symbol,
+        lastPrice: last,
+        priceChangePercent24h:
+          open > 0 ? ((last - open) / open) * 100 : Number(d.price24hPcnt) * 100 || 0,
+        high24h: high > 0 ? high : last,
+        low24h: low > 0 ? low : last,
+        volume24hBase: Number(d.volume24h ?? 0),
+        quoteVolume24h: turnover,
+        openPrice24h: open > 0 ? open : last,
+        eventTime: ts,
+        receivedTime: receiveTime,
+        source: this.name,
+      });
+      return;
+    }
+
     if (topic.startsWith("kline.")) {
       const parts = topic.split(".");
       const bybitIv = parts[1];
@@ -477,6 +536,7 @@ export class ProviderFailover {
   onKline?: (ev: KlineEvent) => void;
   onTick?: (ev: TickEvent) => void;
   onBookTop?: (ev: BookTopEvent) => void;
+  onTicker?: (ev: TickerEvent) => void;
   onHealth?: (source: string, health: FeedHealth, detail?: string) => void;
   onReconnect?: (source: string, lastEventTime: number | null) => void;
 
@@ -491,6 +551,7 @@ export class ProviderFailover {
     p.onKline = (ev) => this.onKline?.(ev);
     p.onTick = (ev) => this.onTick?.(ev);
     p.onBookTop = (ev) => this.onBookTop?.(ev);
+    p.onTicker = (ev) => this.onTicker?.(ev);
     p.onHealth = (health, detail) => this.onHealth?.(p.name, health, detail);
     p.onReconnect = (lastT) => this.onReconnect?.(p.name, lastT);
   }

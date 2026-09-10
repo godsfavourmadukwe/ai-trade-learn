@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
 import { useNavigate } from "react-router";
 import { useMarketData } from "@/hooks/use-market-data";
+import type { Interval } from "@/lib/market/types";
+import { ALL_INTERVALS } from "@/lib/market/types";
 import { useAISignals } from "@/hooks/use-ai-signals";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { PerformanceChart } from "@/components/dashboard/PerformanceChart";
@@ -96,7 +98,20 @@ const defaultStrategy = {
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket, dataSource, apiStatus } = useMarketData();
+  const {
+    data: marketData,
+    loading: marketLoading,
+    error: marketError,
+    lastFetch,
+    refresh: refreshMarket,
+    dataSource,
+    feedHealth,
+    activeProvider,
+    candlesFor,
+    selectedInterval,
+    setInterval: setSelectedInterval,
+    tickAgeMs,
+  } = useMarketData();
   const { 
     signals: aiSignals, 
     latestSignal, 
@@ -117,6 +132,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("markets");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPair, setSelectedPair] = useState<string>("BTC/USDT");
+  const aiLastAnalyzedRef = useRef(0);
 
   useEffect(() => {
     setEquityData(generateDemoData());
@@ -151,9 +167,8 @@ export default function Dashboard() {
       pair.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const selectedPairData = marketData.find(p => p.symbol === selectedPair);
-
-  // Continuously feed all real-time prices into the AI engine
+  const selectedPairData = marketData.find(p => p.symbol === selectedPair);  // Continuously feed all real-time prices into the AI engine (per snapshot,
+  // already batched by the engine — no per-tick React churn)
   useEffect(() => {
     for (const pair of marketData) {
       if (pair.price > 0) {
@@ -162,12 +177,15 @@ export default function Dashboard() {
     }
   }, [marketData, feedPrice]);
 
-  // Analyze selected pair when its price changes
+  // Analyze the selected pair at most every 10s (learning stays continuous,
+  // without generating dozens of throwaway signals per minute)
   useEffect(() => {
-    if (selectedPairData && selectedPairData.price > 0) {
-      analyzeSymbol(selectedPairData.symbol, selectedPairData.price);
-    }
-  }, [selectedPairData?.price, analyzeSymbol]);
+    if (!selectedPairData || selectedPairData.price <= 0) return;
+    const nowMs = Date.now();
+    if (nowMs - aiLastAnalyzedRef.current < 10_000) return;
+    aiLastAnalyzedRef.current = nowMs;
+    analyzeSymbol(selectedPairData.symbol, selectedPairData.price);
+  }, [selectedPairData?.price, selectedPairData?.symbol, analyzeSymbol]);
 
   const formatPrice = (price: number) => {
     if (price < 1) return `$${price.toFixed(4)}`;
@@ -203,11 +221,14 @@ export default function Dashboard() {
               </div>
               <div className="hidden md:flex items-center gap-3">
                 <StatusBadge status="active" label="AI Active" />
-                <StatusBadge status={marketError ? "error" : marketLoading ? "warning" : "success"} label={marketError ? "API Error" : marketLoading ? "Loading..." : "Live Data"} />
+                <StatusBadge
+                  status={feedHealth === "connected" ? "success" : feedHealth === "error" ? "error" : "warning"}
+                  label={feedHealth === "connected" ? `Live · ${activeProvider}` : feedHealth === "error" ? "Feed Error" : "Connecting…"}
+                />
                 {lastFetch && (
                   <span className="text-xs text-zinc-500 flex items-center gap-1">
                     <Clock className="w-3 h-3" />
-                    Updated {formatTime(lastFetch)}
+                    {tickAgeMs < 2000 ? "Updated just now" : `Feed age ${Math.round(tickAgeMs / 1000)}s`}
                   </span>
                 )}
               </div>
@@ -336,11 +357,27 @@ export default function Dashboard() {
                     <div className="lg:w-2/3">
                       <div className="flex items-center justify-between mb-4">
                         <h4 className="text-sm font-bold text-zinc-300">Live Price Chart</h4>
-                        <StatusBadge status="success" label="Real-time" />
+                        <div className="flex items-center gap-1">
+                          {ALL_INTERVALS.map((iv) => (
+                            <button
+                              key={iv}
+                              onClick={() => setSelectedInterval(iv)}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                                selectedInterval === iv
+                                  ? "bg-violet-500/30 text-white border border-violet-400/40"
+                                  : "text-zinc-400 hover:text-white hover:bg-white/[0.05] border border-transparent"
+                              }`}
+                            >
+                              {iv.toUpperCase()}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                       <CandlestickChart
-                        candles={selectedPairData.candles}
+                        candles={candlesFor(selectedPairData.symbol, selectedInterval)}
                         symbol={selectedPairData.symbol}
+                        interval={selectedInterval}
+                        feedHealth={feedHealth}
                         height={300}
                       />
                     </div>
@@ -382,7 +419,12 @@ export default function Dashboard() {
                     
                     <div className="mb-4">
                       <PriceChart
-                        data={pair.priceHistory}
+                        data={
+                          candlesFor(pair.symbol, selectedInterval)
+                            .map((c) => c.close)
+                            .slice(-60)
+                        }
+                        currentPrice={pair.price}
                         height={60}
                         showGrid={false}
                         showLabels={false}
@@ -907,7 +949,13 @@ export default function Dashboard() {
 
           {/* Settings Tab */}
           <TabsContent value="settings" className="space-y-6">
-            <SettingsTab onSave={handleSaveSettings} currentDataSource={dataSource} refreshInterval={0} apiStatus={apiStatus} />
+            <SettingsTab
+              onSave={handleSaveSettings}
+              currentDataSource={dataSource}
+              feedHealth={feedHealth}
+              activeProvider={activeProvider}
+              tickAgeMs={tickAgeMs}
+            />
           </TabsContent>
         </Tabs>
       </div>

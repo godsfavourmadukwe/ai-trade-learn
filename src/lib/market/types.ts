@@ -52,6 +52,21 @@ export interface TickEvent {
   source: string;
 }
 
+/** Normalized 24h ticker snapshot (stats come from the live stream, not REST polling). */
+export interface TickerEvent {
+  symbol: string;
+  lastPrice: number;
+  priceChangePercent24h: number;
+  high24h: number;
+  low24h: number;
+  volume24hBase: number; // base asset (e.g. BTC)
+  quoteVolume24h: number; // quote asset (e.g. USDT)
+  openPrice24h: number;
+  eventTime: number;
+  receivedTime: number;
+  source: string;
+}
+
 /** Normalized book-top event. */
 export interface BookTopEvent {
   symbol: string;
@@ -104,6 +119,17 @@ export interface Diagnostics {
   activeProvider: string | null;
 }
 
+export interface SymbolStats {
+  price: number;
+  change24hPercent: number;
+  high24h: number;
+  low24h: number;
+  volume24h: number; // quote volume
+  open24h: number;
+  lastUpdated: number;
+  source: string;
+}
+
 /** Message pushed to the React layer / UI. */
 export type EngineEvent =
   | { type: "candle_update"; key: CandleKey; candle: Candle; closed: boolean; isBackfill: boolean }
@@ -146,6 +172,7 @@ export interface MarketDataProvider {
   onKline?: (ev: KlineEvent) => void;
   onTick?: (ev: TickEvent) => void;
   onBookTop?: (ev: BookTopEvent) => void;
+  onTicker?: (ev: TickerEvent) => void;
   onHealth?: (health: FeedHealth, detail?: string) => void;
   /** Fired when the provider just reconnected and gives the last event time before drop. */
   onReconnect?: (lastEventTimeBeforeDrop: number | null) => void;

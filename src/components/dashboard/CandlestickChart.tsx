@@ -1,12 +1,16 @@
 import { useEffect, useRef, memo } from "react";
 import { cn } from "@/lib/utils";
-import type { CandleData } from "@/hooks/use-market-data";
+import type { Candle } from "@/lib/market/types";
+
+export type CandleData = Candle;
 
 interface CandlestickChartProps {
   candles: CandleData[];
   height?: number;
   className?: string;
   symbol?: string;
+  interval?: string;
+  feedHealth?: "connecting" | "connected" | "reconnecting" | "stale" | "error";
 }
 
 function drawCandlestickChart(
@@ -162,9 +166,9 @@ function drawCandlestickChart(
   ctx.fillText(priceText, bx + 7, lastY + 4);
 }
 
-function CandlestickChartInner({ candles, height = 350, className, symbol }: CandlestickChartProps) {
+function CandlestickChartInner({ candles, height = 350, className, symbol, interval = "1m", feedHealth = "connected" }: CandlestickChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animRef = useRef<number>(0);
+  const rafRef = useRef<number>(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -172,21 +176,27 @@ function CandlestickChartInner({ candles, height = 350, className, symbol }: Can
 
     let running = true;
     let lastDraw = 0;
-    const loop = (ts: number) => {
+    const drawFrame = (ts: number) => {
       if (!running) return;
-      if (ts - lastDraw < 33) { // ~30fps
-        animRef.current = requestAnimationFrame(loop);
+      // Throttle to ~30fps while data is flowing; engine emits are already batched.
+      if (ts - lastDraw < 33) {
+        rafRef.current = requestAnimationFrame(drawFrame);
         return;
       }
       lastDraw = ts;
       drawCandlestickChart(canvas, candles, height);
-      animRef.current = requestAnimationFrame(loop);
+      rafRef.current = requestAnimationFrame(drawFrame);
     };
-    animRef.current = requestAnimationFrame(loop);
+    rafRef.current = requestAnimationFrame(drawFrame);
+
+    // Stop the loop shortly after the update settles — the engine emits on data,
+    // so a fresh emission restarts the effect. This avoids burning CPU between events.
+    const stop = setTimeout(() => { running = false; }, 250);
 
     return () => {
       running = false;
-      cancelAnimationFrame(animRef.current);
+      cancelAnimationFrame(rafRef.current);
+      clearTimeout(stop);
     };
   }, [candles, height]);
 
@@ -200,13 +210,15 @@ function CandlestickChartInner({ candles, height = 350, className, symbol }: Can
           </div>
         )}
         <div className="px-2 py-1 rounded bg-black/50 backdrop-blur-sm">
-          <span className="text-xs text-emerald-400">● Live</span>
+          <span className={`text-xs ${feedHealth === "connected" ? "text-emerald-400" : feedHealth === "error" ? "text-red-400" : "text-amber-400"}`}>
+            ● {feedHealth === "connected" ? "Live" : feedHealth === "error" ? "Offline" : "Reconnecting"}
+          </span>
         </div>
       </div>
       {candles.length > 0 && (
         <div className="absolute top-2 right-2 flex items-center gap-2">
           <div className="px-2 py-1 rounded bg-black/50 backdrop-blur-sm flex items-center gap-3 text-[10px]">
-            <span className="text-zinc-500">1m candles</span>
+            <span className="text-zinc-500">{interval} candles</span>
             <span className="text-emerald-400">▲ Bull</span>
             <span className="text-rose-400">▼ Bear</span>
           </div>
