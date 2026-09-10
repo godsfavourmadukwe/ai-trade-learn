@@ -42,40 +42,40 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* CHANGE VALUES FOR THEME - Trading Bot Dark Theme */
+/* TRADSLY Bold Colorful Theme */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(0.09 0.005 285);
-  --foreground: oklch(0.95 0 0);
-  --card: oklch(0.13 0.005 285);
-  --card-foreground: oklch(0.95 0 0);
-  --popover: oklch(0.13 0.005 285);
-  --popover-foreground: oklch(0.95 0 0);
-  --primary: oklch(0.65 0.19 265);
+  --radius: 0.75rem;
+  --background: oklch(0.08 0.01 280);
+  --foreground: oklch(0.97 0 0);
+  --card: oklch(0.12 0.01 280);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.12 0.01 280);
+  --popover-foreground: oklch(0.97 0 0);
+  --primary: oklch(0.7 0.2 280);
   --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.18 0.005 285);
-  --secondary-foreground: oklch(0.9 0 0);
-  --muted: oklch(0.18 0.005 285);
+  --secondary: oklch(0.16 0.01 280);
+  --secondary-foreground: oklch(0.92 0 0);
+  --muted: oklch(0.16 0.01 280);
   --muted-foreground: oklch(0.6 0 0);
-  --accent: oklch(0.18 0.005 285);
-  --accent-foreground: oklch(0.9 0 0);
-  --destructive: oklch(0.65 0.2 25);
-  --border: oklch(0.22 0.005 285);
-  --input: oklch(0.22 0.005 285);
-  --ring: oklch(0.65 0.19 265);
-  --chart-1: oklch(0.7 0.18 150);
-  --chart-2: oklch(0.65 0.19 265);
-  --chart-3: oklch(0.7 0.15 45);
-  --chart-4: oklch(0.65 0.15 300);
-  --chart-5: oklch(0.7 0.18 180);
-  --sidebar: oklch(0.11 0.005 285);
-  --sidebar-foreground: oklch(0.9 0 0);
-  --sidebar-primary: oklch(0.65 0.19 265);
+  --accent: oklch(0.16 0.01 280);
+  --accent-foreground: oklch(0.92 0 0);
+  --destructive: oklch(0.7 0.22 25);
+  --border: oklch(0.2 0.01 280);
+  --input: oklch(0.2 0.01 280);
+  --ring: oklch(0.7 0.2 280);
+  --chart-1: oklch(0.75 0.2 150);
+  --chart-2: oklch(0.7 0.2 280);
+  --chart-3: oklch(0.75 0.18 50);
+  --chart-4: oklch(0.7 0.2 320);
+  --chart-5: oklch(0.75 0.2 180);
+  --sidebar: oklch(0.1 0.01 280);
+  --sidebar-foreground: oklch(0.92 0 0);
+  --sidebar-primary: oklch(0.7 0.2 280);
   --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.18 0.005 285);
-  --sidebar-accent-foreground: oklch(0.9 0 0);
-  --sidebar-border: oklch(0.22 0.005 285);
-  --sidebar-ring: oklch(0.65 0.19 265);
+  --sidebar-accent: oklch(0.16 0.01 280);
+  --sidebar-accent-foreground: oklch(0.92 0 0);
+  --sidebar-border: oklch(0.2 0.01 280);
+  --sidebar-ring: oklch(0.7 0.2 280);
 }
 
 @layer base {
@@ -91,23 +91,23 @@
   }
 }
 
-/* Custom scrollbar for trading dashboard */
+/* Custom scrollbar for TRADSLY */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
-  background: oklch(0.13 0.005 285);
+  background: oklch(0.1 0.01 280);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: oklch(0.25 0.005 285);
-  border-radius: 4px;
+  background: oklch(0.25 0.02 280);
+  border-radius: 5px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.3 0.005 285);
+  background: oklch(0.35 0.03 280);
 }
 
 /* Trading signal animations */
@@ -126,22 +126,55 @@
   animation: signal-pulse 2s ease-in-out infinite;
 }
 
+/* Gradient text animation for TRADSLY */
+@keyframes gradient-shift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.animate-gradient {
+  background-size: 200% 200%;
+  animation: gradient-shift 3s ease infinite;
+}
+
 /* Price chart glow effects */
 @keyframes green-glow {
   0%, 100% {
-    box-shadow: 0 0 5px oklch(0.7 0.18 150 / 0.3);
+    box-shadow: 0 0 10px oklch(0.75 0.2 150 / 0.4);
   }
   50% {
-    box-shadow: 0 0 15px oklch(0.7 0.18 150 / 0.5);
+    box-shadow: 0 0 20px oklch(0.75 0.2 150 / 0.6);
   }
 }
 
 @keyframes red-glow {
   0%, 100% {
-    box-shadow: 0 0 5px oklch(0.65 0.2 25 / 0.3);
+    box-shadow: 0 0 10px oklch(0.7 0.22 25 / 0.4);
   }
   50% {
-    box-shadow: 0 0 15px oklch(0.65 0.2 25 / 0.5);
+    box-shadow: 0 0 20px oklch(0.7 0.22 25 / 0.6);
+  }
+}
+
+@keyframes violet-glow {
+  0%, 100% {
+    box-shadow: 0 0 10px oklch(0.7 0.2 280 / 0.4);
+  }
+  50% {
+    box-shadow: 0 0 20px oklch(0.7 0.2 280 / 0.6);
+  }
+}
+
+@keyframes cyan-glow {
+  0%, 100% {
+    box-shadow: 0 0 10px oklch(0.75 0.2 180 / 0.4);
+  }
+  50% {
+    box-shadow: 0 0 20px oklch(0.75 0.2 180 / 0.6);
   }
 }
 
@@ -151,4 +184,36 @@
 
 .glow-red {
   animation: red-glow 2s ease-in-out infinite;
+}
+
+.glow-violet {
+  animation: violet-glow 2s ease-in-out infinite;
+}
+
+.glow-cyan {
+  animation: cyan-glow 2s ease-in-out infinite;
+}
+
+/* Card hover effects */
+.card-hover {
+  transition: all 0.3s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 40px -10px oklch(0.7 0.2 280 / 0.2);
+}
+
+/* Button gradient animation */
+@keyframes button-glow {
+  0%, 100% {
+    box-shadow: 0 0 20px oklch(0.7 0.2 280 / 0.3);
+  }
+  50% {
+    box-shadow: 0 0 30px oklch(0.7 0.2 280 / 0.5);
+  }
+}
+
+.btn-glow:hover {
+  animation: button-glow 1.5s ease-in-out infinite;
 }
