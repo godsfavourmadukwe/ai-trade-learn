@@ -426,7 +426,7 @@ function getFallbackData(): MarketData[] {
   }));
 }
 
-export function useMarketData(refreshInterval: number = 1000): UseMarketDataReturn {
+export function useMarketData(refreshInterval: number = 5000): UseMarketDataReturn {
   const [data, setData] = useState<MarketData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
