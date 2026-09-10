@@ -10,7 +10,7 @@ import { useAISignals } from "@/hooks/use-ai-signals";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { PerformanceChart } from "@/components/dashboard/PerformanceChart";
 import { PriceChart } from "@/components/dashboard/PriceChart";
-import { LivePriceChart } from "@/components/dashboard/LivePriceChart";
+import { CandlestickChart } from "@/components/dashboard/CandlestickChart";
 import { AIInsightsPanel } from "@/components/dashboard/AIInsightsPanel";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { SignalList } from "@/components/dashboard/SignalList";
@@ -27,8 +27,7 @@ import {
   Target,
   Zap,
   RefreshCw,
-  Play,
-  Pause,
+
   Settings,
   Search,
   ChevronRight,
@@ -97,7 +96,7 @@ const defaultStrategy = {
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket, dataSource, apiStatus } = useMarketData(5000);
+  const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket, dataSource, apiStatus } = useMarketData();
   const { 
     signals: aiSignals, 
     latestSignal, 
@@ -114,7 +113,7 @@ export default function Dashboard() {
   
   const [equityData, setEquityData] = useState<number[]>([]);
   const [drawdownData, setDrawdownData] = useState<number[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
+  const aiAlwaysRunning = true;
   const [activeTab, setActiveTab] = useState("markets");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPair, setSelectedPair] = useState<string>("BTC/USDT");
@@ -154,17 +153,21 @@ export default function Dashboard() {
 
   const selectedPairData = marketData.find(p => p.symbol === selectedPair);
 
-  // Feed real prices into AI engine and analyze when price changes
+  // Continuously feed all real-time prices into the AI engine
   useEffect(() => {
-    if (selectedPairData) {
-      // Feed all pairs into the engine for historical context
-      for (const pair of marketData) {
+    for (const pair of marketData) {
+      if (pair.price > 0) {
         feedPrice(pair.symbol, pair.price, pair.volume);
       }
-      // Analyze the selected pair
+    }
+  }, [marketData, feedPrice]);
+
+  // Analyze selected pair when its price changes
+  useEffect(() => {
+    if (selectedPairData && selectedPairData.price > 0) {
       analyzeSymbol(selectedPairData.symbol, selectedPairData.price);
     }
-  }, [selectedPairData?.price, marketData, feedPrice, analyzeSymbol]);
+  }, [selectedPairData?.price, analyzeSymbol]);
 
   const formatPrice = (price: number) => {
     if (price < 1) return `$${price.toFixed(4)}`;
@@ -199,7 +202,7 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="hidden md:flex items-center gap-3">
-                <StatusBadge status={isRunning ? "active" : "inactive"} label={isRunning ? "Bot Active" : "Bot Paused"} />
+                <StatusBadge status="active" label="AI Active" />
                 <StatusBadge status={marketError ? "error" : marketLoading ? "warning" : "success"} label={marketError ? "API Error" : marketLoading ? "Loading..." : "Live Data"} />
                 {lastFetch && (
                   <span className="text-xs text-zinc-500 flex items-center gap-1">
@@ -215,26 +218,7 @@ export default function Dashboard() {
                 <p className="text-sm text-zinc-400">Welcome back</p>
                 <p className="text-sm font-bold">{user?.name || "Trader"}</p>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsRunning(!isRunning)}
-                className={`${isRunning 
-                  ? "border-red-500/50 text-red-400 hover:bg-red-500/20 bg-red-500/10" 
-                  : "border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/20 bg-emerald-500/10"} font-semibold`}
-              >
-                {isRunning ? (
-                  <>
-                    <Pause className="w-4 h-4 mr-2" />
-                    Stop Bot
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 mr-2" />
-                    Start Bot
-                  </>
-                )}
-              </Button>
+              <StatusBadge status="success" label="Always Learning" />
               <Button variant="ghost" size="icon" onClick={handleSignOut} className="text-zinc-400 hover:text-white">
                 <LogOut className="w-5 h-5" />
               </Button>
@@ -354,11 +338,10 @@ export default function Dashboard() {
                         <h4 className="text-sm font-bold text-zinc-300">Live Price Chart</h4>
                         <StatusBadge status="success" label="Real-time" />
                       </div>
-                      <LivePriceChart
-                        currentPrice={selectedPairData.price}
+                      <CandlestickChart
+                        candles={selectedPairData.candles}
                         symbol={selectedPairData.symbol}
-                        priceHistory={selectedPairData.priceHistory}
-                        height={280}
+                        height={300}
                       />
                     </div>
                   </div>
@@ -662,7 +645,7 @@ export default function Dashboard() {
             <div className="grid lg:grid-cols-2 gap-6">
               <StrategyConfig
                 strategy={defaultStrategy}
-                isActive={isRunning}
+                isActive={aiAlwaysRunning}
                 onSave={handleSaveStrategy}
                 onReset={() => console.log("Reset to defaults")}
               />
@@ -924,7 +907,7 @@ export default function Dashboard() {
 
           {/* Settings Tab */}
           <TabsContent value="settings" className="space-y-6">
-            <SettingsTab onSave={handleSaveSettings} currentDataSource={dataSource} refreshInterval={1} apiStatus={apiStatus} />
+            <SettingsTab onSave={handleSaveSettings} currentDataSource={dataSource} refreshInterval={0} apiStatus={apiStatus} />
           </TabsContent>
         </Tabs>
       </div>
