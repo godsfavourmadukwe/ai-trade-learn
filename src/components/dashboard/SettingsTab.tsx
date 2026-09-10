@@ -16,11 +16,13 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
-  Zap
+  Zap,
+  TrendingUp
 } from "lucide-react";
 
 interface ApiConfig {
   coingeckoApiKey: string;
+  yahooFinanceApiKey: string;
   binanceApiKey: string;
   binanceApiSecret: string;
   openaiApiKey: string;
@@ -28,18 +30,21 @@ interface ApiConfig {
 
 interface ServiceStatus {
   name: string;
-  status: "connected" | "disconnected" | "error";
+  status: "connected" | "disconnected" | "error" | "limited";
   lastChecked: number | null;
   description: string;
+  isPrimary?: boolean;
 }
 
 interface SettingsTabProps {
   onSave: (config: ApiConfig) => void;
+  currentDataSource?: string;
 }
 
-export function SettingsTab({ onSave }: SettingsTabProps) {
+export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
   const [config, setConfig] = useState<ApiConfig>({
     coingeckoApiKey: "",
+    yahooFinanceApiKey: "",
     binanceApiKey: "",
     binanceApiSecret: "",
     openaiApiKey: "",
@@ -51,16 +56,23 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
 
   const [services, setServices] = useState<ServiceStatus[]>([
     {
+      name: "Yahoo Finance",
+      status: "connected",
+      lastChecked: Date.now(),
+      description: "Free real-time market data (no API key required)",
+      isPrimary: true,
+    },
+    {
       name: "CoinGecko API",
       status: "connected",
       lastChecked: Date.now(),
-      description: "Free market data (no key required for basic usage)",
+      description: "Backup data source with market cap info",
     },
     {
       name: "Binance API",
       status: "disconnected",
       lastChecked: null,
-      description: "Live exchange data and trading (optional)",
+      description: "Live exchange data and trading execution",
     },
     {
       name: "AI Analysis Engine",
@@ -76,13 +88,49 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
     },
   ]);
 
+  // Load saved config from localStorage
+  useEffect(() => {
+    const savedConfig = localStorage.getItem("tradslly_api_config");
+    if (savedConfig) {
+      try {
+        setConfig(JSON.parse(savedConfig));
+      } catch (e) {
+        console.error("Failed to load saved config:", e);
+      }
+    }
+  }, []);
+
   // Check API status on mount
   useEffect(() => {
     checkApiStatus();
   }, []);
 
   const checkApiStatus = async () => {
-    // Check CoinGecko (free, no key needed)
+    // Check Yahoo Finance
+    try {
+      const response = await fetch(
+        "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?interval=1d&range=1d",
+        {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          },
+        }
+      );
+      
+      setServices(prev => prev.map(s => 
+        s.name === "Yahoo Finance" 
+          ? { ...s, status: response.ok ? "connected" : "error", lastChecked: Date.now() }
+          : s
+      ));
+    } catch {
+      setServices(prev => prev.map(s => 
+        s.name === "Yahoo Finance" 
+          ? { ...s, status: "error", lastChecked: Date.now() }
+          : s
+      ));
+    }
+
+    // Check CoinGecko
     try {
       const response = await fetch(
         "https://api.coingecko.com/api/v3/ping"
@@ -104,7 +152,6 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
     // Check Binance (if API key provided)
     if (config.binanceApiKey) {
       try {
-        // Simple check - just verify we can reach the API
         const response = await fetch("https://api.binance.com/api/v3/ping");
         setServices(prev => prev.map(s => 
           s.name === "Binance API" 
@@ -132,13 +179,11 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
 
   const handleSave = async () => {
     setSaving(true);
-    // Simulate save
     await new Promise(resolve => setTimeout(resolve, 1000));
     onSave(config);
     setHasChanges(false);
     setSaving(false);
-    
-    // Re-check status after save
+    localStorage.setItem("tradslly_api_config", JSON.stringify(config));
     checkApiStatus();
   };
 
@@ -149,6 +194,34 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
 
   return (
     <div className="space-y-6">
+      {/* Active Data Source */}
+      <Card className="bg-[#111118] border-white/[0.08]">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-violet-400" />
+            Active Data Source
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="p-4 rounded-xl bg-gradient-to-r from-violet-500/10 to-cyan-500/10 border border-violet-500/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-violet-500/20 flex items-center justify-center">
+                  <Zap className="w-5 h-5 text-violet-400" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white">
+                    {currentDataSource || "Yahoo Finance"}
+                  </h4>
+                  <p className="text-xs text-zinc-400">Real-time market data</p>
+                </div>
+              </div>
+              <StatusBadge status="success" label="Active" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Service Status */}
       <Card className="bg-[#111118] border-white/[0.08]">
         <CardHeader className="pb-3">
@@ -162,15 +235,26 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
             {services.map(service => (
               <div
                 key={service.name}
-                className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]"
+                className={`p-4 rounded-xl border ${
+                  service.isPrimary 
+                    ? "bg-violet-500/5 border-violet-500/20" 
+                    : "bg-white/[0.03] border-white/[0.08]"
+                }`}
               >
                 <div className="flex items-start justify-between mb-2">
                   <div>
-                    <h4 className="text-sm font-bold text-white">{service.name}</h4>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-bold text-white">{service.name}</h4>
+                      {service.isPrimary && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300">
+                          Primary
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-zinc-500 mt-1">{service.description}</p>
                   </div>
                   <StatusBadge
-                    status={service.status === "connected" ? "success" : service.status === "error" ? "error" : "inactive"}
+                    status={service.status === "connected" ? "success" : service.status === "error" ? "error" : service.status === "limited" ? "warning" : "inactive"}
                     label={service.status.charAt(0).toUpperCase() + service.status.slice(1)}
                   />
                 </div>
@@ -202,18 +286,37 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* CoinGecko */}
+          {/* Yahoo Finance - Free */}
+          <div className="p-4 rounded-xl bg-violet-500/5 border border-violet-500/20">
+            <div className="flex items-center gap-3 mb-3">
+              <CheckCircle className="w-5 h-5 text-violet-400" />
+              <div>
+                <h4 className="text-sm font-bold text-white">Yahoo Finance API</h4>
+                <p className="text-xs text-zinc-400">Free tier - No API key required for real-time data</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-violet-400">
+              <Zap className="w-3 h-3" />
+              <span>Currently active and fetching real-time prices from Yahoo Finance</span>
+            </div>
+            <p className="text-xs text-zinc-500 mt-2">
+              Yahoo Finance provides free real-time cryptocurrency data including BTC, ETH, SOL, and more.
+              No API key needed - data is fetched directly from their public endpoints.
+            </p>
+          </div>
+
+          {/* CoinGecko - Free Backup */}
           <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
             <div className="flex items-center gap-3 mb-3">
               <CheckCircle className="w-5 h-5 text-emerald-400" />
               <div>
                 <h4 className="text-sm font-bold text-white">CoinGecko API</h4>
-                <p className="text-xs text-zinc-400">Free tier - No API key required for basic market data</p>
+                <p className="text-xs text-zinc-400">Free tier - Backup data source with market cap info</p>
               </div>
             </div>
             <div className="flex items-center gap-2 text-xs text-emerald-400">
               <Zap className="w-3 h-3" />
-              <span>Currently active and fetching real-time prices</span>
+              <span>Active as backup when Yahoo Finance is unavailable</span>
             </div>
           </div>
 
@@ -223,7 +326,7 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
               <Database className="w-5 h-5 text-amber-400" />
               <div>
                 <h4 className="text-sm font-bold text-white">Binance API (Optional)</h4>
-                <p className="text-xs text-zinc-400">For live trading and advanced market data</p>
+                <p className="text-xs text-zinc-400">For live trading execution and advanced market data</p>
               </div>
             </div>
             
@@ -286,7 +389,7 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
               <Shield className="w-5 h-5 text-violet-400" />
               <div>
                 <h4 className="text-sm font-bold text-white">OpenAI API (Optional)</h4>
-                <p className="text-xs text-zinc-400">For enhanced AI pattern analysis</p>
+                <p className="text-xs text-zinc-400">For enhanced AI pattern analysis and recommendations</p>
               </div>
             </div>
             
@@ -361,6 +464,10 @@ export function SettingsTab({ onSave }: SettingsTabProps) {
             <div className="flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
               <p>API keys are stored locally in your browser and never sent to our servers.</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+              <p>Yahoo Finance and CoinGecko APIs are free and don't require API keys for basic usage.</p>
             </div>
             <div className="flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />

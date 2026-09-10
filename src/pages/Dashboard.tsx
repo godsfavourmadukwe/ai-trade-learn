@@ -94,7 +94,7 @@ const defaultStrategy = {
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket } = useMarketData(30000);
+  const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket, dataSource } = useMarketData(30000);
   
   const [equityData, setEquityData] = useState<number[]>([]);
   const [drawdownData, setDrawdownData] = useState<number[]>([]);
@@ -836,7 +836,7 @@ export default function Dashboard() {
 
           {/* Settings Tab */}
           <TabsContent value="settings" className="space-y-6">
-            <SettingsTab onSave={handleSaveSettings} />
+            <SettingsTab onSave={handleSaveSettings} currentDataSource={dataSource} />
           </TabsContent>
         </Tabs>
       </div>
