@@ -14,7 +14,8 @@ interface MarketData {
   previousClose: number;
   priceHistory: number[];
   lastUpdated: number;
-  source: "bybit" | "coingecko" | "fallback";
+  source: string;
+  priceSources: Record<string, number>;
 }
 
 interface UseMarketDataReturn {
@@ -25,28 +26,115 @@ interface UseMarketDataReturn {
   refresh: () => void;
   getPairData: (symbol: string) => MarketData | undefined;
   dataSource: string;
+  apiStatus: Record<string, "connected" | "error" | "loading">;
 }
 
-// Bybit symbol mapping for crypto pairs
-const BYBIT_SYMBOLS: Record<string, string> = {
-  "BTC/USDT": "BTCUSDT",
-  "ETH/USDT": "ETHUSDT",
-  "SOL/USDT": "SOLUSDT",
-  "BNB/USDT": "BNBUSDT",
-  "XRP/USDT": "XRPUSDT",
-  "ADA/USDT": "ADAUSDT",
-  "DOGE/USDT": "DOGEUSDT",
-  "AVAX/USDT": "AVAXUSDT",
-  "DOT/USDT": "DOTUSDT",
-  "LINK/USDT": "LINKUSDT",
-  "MATIC/USDT": "MATICUSDT",
-  "UNI/USDT": "UNIUSDT",
-  "ATOM/USDT": "ATOMUSDT",
-  "LTC/USDT": "LTCUSDT",
-  "FIL/USDT": "FILUSDT",
+// Symbol mappings for each API
+const API_SYMBOLS = {
+  bybit: {
+    "BTC/USDT": "BTCUSDT",
+    "ETH/USDT": "ETHUSDT",
+    "SOL/USDT": "SOLUSDT",
+    "BNB/USDT": "BNBUSDT",
+    "XRP/USDT": "XRPUSDT",
+    "ADA/USDT": "ADAUSDT",
+    "DOGE/USDT": "DOGEUSDT",
+    "AVAX/USDT": "AVAXUSDT",
+    "DOT/USDT": "DOTUSDT",
+    "LINK/USDT": "LINKUSDT",
+    "MATIC/USDT": "MATICUSDT",
+    "UNI/USDT": "UNIUSDT",
+    "ATOM/USDT": "ATOMUSDT",
+    "LTC/USDT": "LTCUSDT",
+    "FIL/USDT": "FILUSDT",
+  },
+  binance: {
+    "BTC/USDT": "BTCUSDT",
+    "ETH/USDT": "ETHUSDT",
+    "SOL/USDT": "SOLUSDT",
+    "BNB/USDT": "BNBUSDT",
+    "XRP/USDT": "XRPUSDT",
+    "ADA/USDT": "ADAUSDT",
+    "DOGE/USDT": "DOGEUSDT",
+    "AVAX/USDT": "AVAXUSDT",
+    "DOT/USDT": "DOTUSDT",
+    "LINK/USDT": "LINKUSDT",
+    "MATIC/USDT": "MATICUSDT",
+    "UNI/USDT": "UNIUSDT",
+    "ATOM/USDT": "ATOMUSDT",
+    "LTC/USDT": "LTCUSDT",
+    "FIL/USDT": "FILUSDT",
+  },
+  coingecko: {
+    "BTC/USDT": "bitcoin",
+    "ETH/USDT": "ethereum",
+    "SOL/USDT": "solana",
+    "BNB/USDT": "binancecoin",
+    "XRP/USDT": "ripple",
+    "ADA/USDT": "cardano",
+    "DOGE/USDT": "dogecoin",
+    "AVAX/USDT": "avalanche-2",
+    "DOT/USDT": "polkadot",
+    "LINK/USDT": "chainlink",
+    "MATIC/USDT": "matic-network",
+    "UNI/USDT": "uniswap",
+    "ATOM/USDT": "cosmos",
+    "LTC/USDT": "litecoin",
+    "FIL/USDT": "filecoin",
+  },
+  cryptocompare: {
+    "BTC/USDT": "BTC",
+    "ETH/USDT": "ETH",
+    "SOL/USDT": "SOL",
+    "BNB/USDT": "BNB",
+    "XRP/USDT": "XRP",
+    "ADA/USDT": "ADA",
+    "DOGE/USDT": "DOGE",
+    "AVAX/USDT": "AVAX",
+    "DOT/USDT": "DOT",
+    "LINK/USDT": "LINK",
+    "MATIC/USDT": "MATIC",
+    "UNI/USDT": "UNI",
+    "ATOM/USDT": "ATOM",
+    "LTC/USDT": "LTC",
+    "FIL/USDT": "FIL",
+  },
+  kraken: {
+    "BTC/USDT": "XBTUSDT",
+    "ETH/USDT": "ETHUSDT",
+    "SOL/USDT": "SOLUSDT",
+    "BNB/USDT": "BNBUSDT",
+    "XRP/USDT": "XRPUSDT",
+    "ADA/USDT": "ADAUSDT",
+    "DOGE/USDT": "DOGEUSDT",
+    "AVAX/USDT": "AVAXUSDT",
+    "DOT/USDT": "DOTUSDT",
+    "LINK/USDT": "LINKUSDT",
+    "MATIC/USDT": "MATICUSDT",
+    "UNI/USDT": "UNIUSDT",
+    "ATOM/USDT": "ATOMUSDT",
+    "LTC/USDT": "LTCUSDT",
+    "FIL/USDT": "FILUSDT",
+  },
+  coinmarketcap: {
+    "BTC/USDT": "1",
+    "ETH/USDT": "1027",
+    "SOL/USDT": "5426",
+    "BNB/USDT": "1839",
+    "XRP/USDT": "52",
+    "ADA/USDT": "2010",
+    "DOGE/USDT": "74",
+    "AVAX/USDT": "5805",
+    "DOT/USDT": "6636",
+    "LINK/USDT": "1975",
+    "MATIC/USDT": "3890",
+    "UNI/USDT": "7083",
+    "ATOM/USDT": "3794",
+    "LTC/USDT": "2",
+    "FIL/USDT": "2280",
+  },
 };
 
-// Display names
 const DISPLAY_NAMES: Record<string, string> = {
   "BTC/USDT": "Bitcoin",
   "ETH/USDT": "Ethereum",
@@ -65,17 +153,17 @@ const DISPLAY_NAMES: Record<string, string> = {
   "FIL/USDT": "Filecoin",
 };
 
-// Cache for price history
+// Price history cache
 const priceHistoryCache: Record<string, number[]> = {};
 
 function generatePriceHistory(currentPrice: number, points: number = 100): number[] {
   const history: number[] = [];
-  let price = currentPrice * 0.95;
+  let price = currentPrice * 0.97;
   
   for (let i = 0; i < points; i++) {
-    const change = (Math.random() - 0.48) * (currentPrice * 0.008);
-    price = Math.max(price + change, currentPrice * 0.92);
-    price = Math.min(price, currentPrice * 1.08);
+    const change = (Math.random() - 0.48) * (currentPrice * 0.005);
+    price = Math.max(price + change, currentPrice * 0.94);
+    price = Math.min(price, currentPrice * 1.06);
     history.push(price);
   }
   
@@ -83,140 +171,227 @@ function generatePriceHistory(currentPrice: number, points: number = 100): numbe
   return history;
 }
 
-// Fetch from Bybit API
-async function fetchBybitData(): Promise<MarketData[]> {
+// API 1: Bybit
+async function fetchBybit(): Promise<Record<string, { price: number; high: number; low: number; volume: number }>> {
   try {
-    // Bybit public API - get all tickers
-    const response = await fetch(
-      "https://api.bybit.com/v5/market/tickers?category=spot",
-      {
-        headers: {
-          "Accept": "application/json",
-        },
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`Bybit API error: ${response.status}`);
-    }
-
-    const result = await response.json();
+    const response = await fetch("https://api.bybit.com/v5/market/tickers?category=spot");
+    if (!response.ok) throw new Error("Bybit failed");
     
-    if (result.retCode !== 0 || !result.result?.list) {
-      throw new Error("Invalid Bybit API response");
-    }
-
-    const tickers = result.result.list;
-    const marketData: MarketData[] = [];
-
-    for (const [displaySymbol, bybitSymbol] of Object.entries(BYBIT_SYMBOLS)) {
-      const ticker = tickers.find((t: any) => t.symbol === bybitSymbol);
-      
+    const result = await response.json();
+    if (result.retCode !== 0) throw new Error("Bybit error");
+    
+    const prices: Record<string, { price: number; high: number; low: number; volume: number }> = {};
+    
+    for (const [symbol, bybitSymbol] of Object.entries(API_SYMBOLS.bybit)) {
+      const ticker = result.result?.list?.find((t: any) => t.symbol === bybitSymbol);
       if (ticker) {
-        const price = parseFloat(ticker.lastPrice) || 0;
-        const prevPrice24h = parseFloat(ticker.prevPrice24h) || price;
-        const change24h = price - prevPrice24h;
-        const change24hPercent = prevPrice24h ? (change24h / prevPrice24h) * 100 : 0;
-        const high24h = parseFloat(ticker.highPrice24h) || price;
-        const low24h = parseFloat(ticker.lowPrice24h) || price;
-        const volume = parseFloat(ticker.turnover24h) || 0;
-        
-        // Update price history cache
-        if (!priceHistoryCache[displaySymbol] || priceHistoryCache[displaySymbol].length === 0) {
-          priceHistoryCache[displaySymbol] = generatePriceHistory(price);
-        } else {
-          const history = priceHistoryCache[displaySymbol];
-          history.shift();
-          history.push(price);
-        }
-
-        marketData.push({
-          symbol: displaySymbol,
-          name: DISPLAY_NAMES[displaySymbol] || displaySymbol.replace("/USDT", ""),
-          price,
-          change24h,
-          change24hPercent,
-          volume,
-          marketCap: 0,
-          high24h,
-          low24h,
-          open: prevPrice24h,
-          previousClose: prevPrice24h,
-          priceHistory: [...priceHistoryCache[displaySymbol]],
-          lastUpdated: Date.now(),
-          source: "bybit",
-        });
+        prices[symbol] = {
+          price: parseFloat(ticker.lastPrice) || 0,
+          high: parseFloat(ticker.highPrice24h) || 0,
+          low: parseFloat(ticker.lowPrice24h) || 0,
+          volume: parseFloat(ticker.turnover24h) || 0,
+        };
       }
     }
-
-    return marketData;
-  } catch (error) {
-    console.error("Bybit API error:", error);
-    throw error;
+    
+    return prices;
+  } catch (e) {
+    console.warn("Bybit API error:", e);
+    return {};
   }
 }
 
-// Fallback to CoinGecko
-async function fetchCoinGecko(): Promise<MarketData[]> {
-  const COIN_IDS: Record<string, string> = {
-    "BTC/USDT": "bitcoin",
-    "ETH/USDT": "ethereum",
-    "SOL/USDT": "solana",
-    "BNB/USDT": "binancecoin",
-    "XRP/USDT": "ripple",
-    "ADA/USDT": "cardano",
-    "DOGE/USDT": "dogecoin",
-    "AVAX/USDT": "avalanche-2",
-    "DOT/USDT": "polkadot",
-    "LINK/USDT": "chainlink",
-  };
-
-  const coinIds = Object.values(COIN_IDS).join(",");
-  
-  const response = await fetch(
-    `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${coinIds}&order=market_cap_desc&per_page=100&page=1&sparkline=false&price_change_percentage=24h`
-  );
-
-  if (!response.ok) {
-    throw new Error(`CoinGecko API error: ${response.status}`);
-  }
-
-  const coins = await response.json();
-  const marketData: MarketData[] = [];
-
-  for (const [symbol, coinId] of Object.entries(COIN_IDS)) {
-    const coin = coins.find((c: any) => c.id === coinId);
+// API 2: Binance
+async function fetchBinance(): Promise<Record<string, { price: number; high: number; low: number; volume: number }>> {
+  try {
+    const response = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+    if (!response.ok) throw new Error("Binance failed");
     
-    if (coin) {
-      const price = coin.current_price;
-      
-      if (!priceHistoryCache[symbol] || priceHistoryCache[symbol].length === 0) {
-        priceHistoryCache[symbol] = generatePriceHistory(price);
-      } else {
-        priceHistoryCache[symbol].shift();
-        priceHistoryCache[symbol].push(price);
+    const tickers = await response.json();
+    const prices: Record<string, { price: number; high: number; low: number; volume: number }> = {};
+    
+    for (const [symbol, binanceSymbol] of Object.entries(API_SYMBOLS.binance)) {
+      const ticker = tickers.find((t: any) => t.symbol === binanceSymbol);
+      if (ticker) {
+        prices[symbol] = {
+          price: parseFloat(ticker.lastPrice) || 0,
+          high: parseFloat(ticker.highPrice) || 0,
+          low: parseFloat(ticker.lowPrice) || 0,
+          volume: parseFloat(ticker.quoteVolume) || 0,
+        };
       }
-      
-      marketData.push({
-        symbol,
-        name: DISPLAY_NAMES[symbol] || coin.name,
-        price,
-        change24h: coin.price_change_24h || 0,
-        change24hPercent: coin.price_change_percentage_24h || 0,
-        volume: coin.total_volume || 0,
-        marketCap: coin.market_cap || 0,
-        high24h: coin.high_24h || price,
-        low24h: coin.low_24h || price,
-        open: price * 0.99,
-        previousClose: price - (coin.price_change_24h || 0),
-        priceHistory: [...priceHistoryCache[symbol]],
-        lastUpdated: Date.now(),
-        source: "coingecko",
-      });
+    }
+    
+    return prices;
+  } catch (e) {
+    console.warn("Binance API error:", e);
+    return {};
+  }
+}
+
+// API 3: CoinGecko
+async function fetchCoinGecko(): Promise<Record<string, { price: number; high: number; low: number; volume: number; marketCap: number }>> {
+  try {
+    const coinIds = Object.values(API_SYMBOLS.coingecko).join(",");
+    const response = await fetch(
+      `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${coinIds}&price_change_percentage=24h`
+    );
+    if (!response.ok) throw new Error("CoinGecko failed");
+    
+    const coins = await response.json();
+    const prices: Record<string, { price: number; high: number; low: number; volume: number; marketCap: number }> = {};
+    
+    for (const [symbol, coinId] of Object.entries(API_SYMBOLS.coingecko)) {
+      const coin = coins.find((c: any) => c.id === coinId);
+      if (coin) {
+        prices[symbol] = {
+          price: coin.current_price || 0,
+          high: coin.high_24h || 0,
+          low: coin.low_24h || 0,
+          volume: coin.total_volume || 0,
+          marketCap: coin.market_cap || 0,
+        };
+      }
+    }
+    
+    return prices;
+  } catch (e) {
+    console.warn("CoinGecko API error:", e);
+    return {};
+  }
+}
+
+// API 4: CryptoCompare
+async function fetchCryptoCompare(): Promise<Record<string, { price: number; high: number; low: number; volume: number }>> {
+  try {
+    const symbols = Object.values(API_SYMBOLS.cryptocompare).join(",");
+    const response = await fetch(
+      `https://min-api.cryptocompare.com/data/pricemultifull?fsyms=${symbols}&tsyms=USD`
+    );
+    if (!response.ok) throw new Error("CryptoCompare failed");
+    
+    const data = await response.json();
+    const prices: Record<string, { price: number; high: number; low: number; volume: number }> = {};
+    
+    for (const [symbol, ccSymbol] of Object.entries(API_SYMBOLS.cryptocompare)) {
+      const ticker = data.RAW?.[ccSymbol]?.USD;
+      if (ticker) {
+        prices[symbol] = {
+          price: ticker.PRICE || 0,
+          high: ticker.HIGH24HOUR || 0,
+          low: ticker.LOW24HOUR || 0,
+          volume: ticker.VOLUME24HOURTO || 0,
+        };
+      }
+    }
+    
+    return prices;
+  } catch (e) {
+    console.warn("CryptoCompare API error:", e);
+    return {};
+  }
+}
+
+// API 5: Kraken
+async function fetchKraken(): Promise<Record<string, { price: number; high: number; low: number; volume: number }>> {
+  try {
+    const pairs = Object.values(API_SYMBOLS.kraken).join(",");
+    const response = await fetch(
+      `https://api.kraken.com/0/public/Ticker?pair=${pairs}`
+    );
+    if (!response.ok) throw new Error("Kraken failed");
+    
+    const result = await response.json();
+    if (result.error?.length > 0) throw new Error("Kraken error");
+    
+    const prices: Record<string, { price: number; high: number; low: number; volume: number }> = {};
+    
+    for (const [symbol, krakenSymbol] of Object.entries(API_SYMBOLS.kraken)) {
+      const ticker = result.result?.[krakenSymbol];
+      if (ticker) {
+        prices[symbol] = {
+          price: parseFloat(ticker.c?.[0]) || 0,
+          high: parseFloat(ticker.h?.[1]) || 0,
+          low: parseFloat(ticker.l?.[1]) || 0,
+          volume: parseFloat(ticker.v?.[1]) || 0,
+        };
+      }
+    }
+    
+    return prices;
+  } catch (e) {
+    console.warn("Kraken API error:", e);
+    return {};
+  }
+}
+
+// API 6: CoinMarketCap (free tier - limited)
+async function fetchCoinMarketCap(): Promise<Record<string, { price: number; volume: number; marketCap: number }>> {
+  try {
+    const ids = Object.values(API_SYMBOLS.coinmarketcap).join(",");
+    const response = await fetch(
+      `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/detail?id=${ids}`
+    );
+    if (!response.ok) throw new Error("CoinMarketCap failed");
+    
+    const result = await response.json();
+    const prices: Record<string, { price: number; volume: number; marketCap: number }> = {};
+    
+    for (const [symbol, cmcId] of Object.entries(API_SYMBOLS.coinmarketcap)) {
+      const coin = result.data?.[cmcId];
+      if (coin?.statistics) {
+        prices[symbol] = {
+          price: coin.statistics.price || 0,
+          volume: coin.statistics.volume24h || 0,
+          marketCap: coin.statistics.marketCap || 0,
+        };
+      }
+    }
+    
+    return prices;
+  } catch (e) {
+    console.warn("CoinMarketCap API error:", e);
+    return {};
+  }
+}
+
+// Aggregate prices from multiple sources
+function aggregatePrices(
+  sources: Record<string, Record<string, { price: number; high?: number; low?: number; volume?: number; marketCap?: number }>>,
+  symbol: string
+): { price: number; high: number; low: number; volume: number; marketCap: number } {
+  const allPrices: number[] = [];
+  const allHighs: number[] = [];
+  const allLows: number[] = [];
+  let totalVolume = 0;
+  let marketCap = 0;
+  
+  for (const [source, data] of Object.entries(sources)) {
+    const ticker = data[symbol];
+    if (ticker && ticker.price > 0) {
+      allPrices.push(ticker.price);
+      if (ticker.high) allHighs.push(ticker.high);
+      if (ticker.low) allLows.push(ticker.low);
+      if (ticker.volume) totalVolume += ticker.volume;
+      if (ticker.marketCap) marketCap = ticker.marketCap;
     }
   }
-
-  return marketData;
+  
+  // Use median for price (more robust than mean)
+  allPrices.sort((a, b) => a - b);
+  const medianPrice = allPrices[Math.floor(allPrices.length / 2)] || 0;
+  
+  // Use max high and min low
+  const maxHigh = allHighs.length > 0 ? Math.max(...allHighs) : medianPrice * 1.02;
+  const minLow = allLows.length > 0 ? Math.min(...allLows) : medianPrice * 0.98;
+  
+  return {
+    price: medianPrice,
+    high: maxHigh,
+    low: minLow,
+    volume: totalVolume,
+    marketCap,
+  };
 }
 
 // Fallback demo data
@@ -246,83 +421,158 @@ function getFallbackData(): MarketData[] {
     previousClose: pair.price * 0.98,
     priceHistory: generatePriceHistory(pair.price),
     lastUpdated: Date.now(),
-    source: "fallback" as const,
+    source: "demo",
+    priceSources: {},
   }));
 }
 
-export function useMarketData(refreshInterval: number = 10000): UseMarketDataReturn {
+export function useMarketData(refreshInterval: number = 1000): UseMarketDataReturn {
   const [data, setData] = useState<MarketData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastFetch, setLastFetch] = useState<number | null>(null);
   const [dataSource, setDataSource] = useState<string>("initializing");
+  const [apiStatus, setApiStatus] = useState<Record<string, "connected" | "error" | "loading">>({
+    bybit: "loading",
+    binance: "loading",
+    coingecko: "loading",
+    cryptocompare: "loading",
+    kraken: "loading",
+    coinmarketcap: "loading",
+  });
+  
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
+  const fetchCountRef = useRef(0);
 
   const fetchMarketData = useCallback(async () => {
     if (!mountedRef.current) return;
     
-    try {
+    fetchCountRef.current++;
+    const isFirstFetch = fetchCountRef.current === 1;
+    
+    if (isFirstFetch) {
       setLoading(true);
-      setError(null);
+    }
+    
+    setError(null);
 
-      // Try Bybit first
-      try {
-        const bybitData = await fetchBybitData();
-        if (bybitData.length > 0 && mountedRef.current) {
-          setData(bybitData);
-          setDataSource("Bybit");
-          setLastFetch(Date.now());
-          setLoading(false);
-          return;
-        }
-      } catch (bybitError) {
-        console.warn("Bybit failed, trying CoinGecko:", bybitError);
-      }
+    // Fetch all APIs in parallel
+    const [bybitData, binanceData, coingeckoData, ccData, krakenData, cmcData] = await Promise.allSettled([
+      fetchBybit(),
+      fetchBinance(),
+      fetchCoinGecko(),
+      fetchCryptoCompare(),
+      fetchKraken(),
+      fetchCoinMarketCap(),
+    ]);
 
-      // Fallback to CoinGecko
-      try {
-        const coingeckoData = await fetchCoinGecko();
-        if (mountedRef.current) {
-          setData(coingeckoData);
-          setDataSource("CoinGecko");
-          setLastFetch(Date.now());
-          setLoading(false);
-          return;
-        }
-      } catch (coingeckoError) {
-        console.warn("CoinGecko failed:", coingeckoError);
-      }
+    // Update API status
+    const newStatus: Record<string, "connected" | "error"> = {
+      bybit: bybitData.status === "fulfilled" && Object.keys(bybitData.value).length > 0 ? "connected" : "error",
+      binance: binanceData.status === "fulfilled" && Object.keys(binanceData.value).length > 0 ? "connected" : "error",
+      coingecko: coingeckoData.status === "fulfilled" && Object.keys(coingeckoData.value).length > 0 ? "connected" : "error",
+      cryptocompare: ccData.status === "fulfilled" && Object.keys(ccData.value).length > 0 ? "connected" : "error",
+      kraken: krakenData.status === "fulfilled" && Object.keys(krakenData.value).length > 0 ? "connected" : "error",
+      coinmarketcap: cmcData.status === "fulfilled" && Object.keys(cmcData.value).length > 0 ? "connected" : "error",
+    };
+    
+    if (mountedRef.current) {
+      setApiStatus(newStatus);
+    }
 
-      // Use fallback if both fail
+    // Collect all sources
+    const allSources: Record<string, Record<string, { price: number; high?: number; low?: number; volume?: number; marketCap?: number }>> = {};
+    
+    if (bybitData.status === "fulfilled") allSources.bybit = bybitData.value;
+    if (binanceData.status === "fulfilled") allSources.binance = binanceData.value;
+    if (coingeckoData.status === "fulfilled") allSources.coingecko = coingeckoData.value;
+    if (ccData.status === "fulfilled") allSources.cryptocompare = ccData.value;
+    if (krakenData.status === "fulfilled") allSources.kraken = krakenData.value;
+    if (cmcData.status === "fulfilled") allSources.coinmarketcap = cmcData.value;
+
+    // Check if we have any data
+    const activeSources = Object.keys(allSources).length;
+    
+    if (activeSources === 0) {
       if (mountedRef.current) {
-        setData(getFallbackData());
-        setDataSource("Demo (offline)");
-        setLastFetch(Date.now());
-        setLoading(false);
-      }
-    } catch (err) {
-      console.error("Failed to fetch market data:", err);
-      if (mountedRef.current) {
-        setError(err instanceof Error ? err.message : "Failed to fetch market data");
-        setLoading(false);
-        
         if (data.length === 0) {
           setData(getFallbackData());
-          setDataSource("Demo (offline)");
+          setDataSource("Demo (all APIs offline)");
         }
+        setLoading(false);
       }
+      return;
+    }
+
+    // Aggregate prices from all sources
+    const marketData: MarketData[] = [];
+    const symbols = Object.keys(API_SYMBOLS.bybit);
+
+    for (const symbol of symbols) {
+      const aggregated = aggregatePrices(allSources, symbol);
+      
+      if (aggregated.price > 0) {
+        // Update price history cache
+        if (!priceHistoryCache[symbol] || priceHistoryCache[symbol].length === 0) {
+          priceHistoryCache[symbol] = generatePriceHistory(aggregated.price);
+        } else {
+          const history = priceHistoryCache[symbol];
+          const lastPrice = history[history.length - 1];
+          
+          // Only add new point if price changed
+          if (Math.abs(aggregated.price - lastPrice) / lastPrice > 0.0001) {
+            history.push(aggregated.price);
+            if (history.length > 200) {
+              history.shift();
+            }
+          }
+        }
+
+        // Calculate 24h change from previous data
+        const prevData = data.find(d => d.symbol === symbol);
+        const previousClose = prevData?.price || aggregated.price;
+        const change24h = aggregated.price - previousClose;
+        const change24hPercent = previousClose > 0 ? (change24h / previousClose) * 100 : 0;
+
+        marketData.push({
+          symbol,
+          name: DISPLAY_NAMES[symbol] || symbol.replace("/USDT", ""),
+          price: aggregated.price,
+          change24h,
+          change24hPercent,
+          volume: aggregated.volume,
+          marketCap: aggregated.marketCap,
+          high24h: aggregated.high,
+          low24h: aggregated.low,
+          open: previousClose,
+          previousClose,
+          priceHistory: [...priceHistoryCache[symbol]],
+          lastUpdated: Date.now(),
+          source: `${activeSources} APIs`,
+          priceSources: Object.fromEntries(
+            Object.entries(allSources).map(([src, data]) => [src, data[symbol]?.price || 0])
+          ),
+        });
+      }
+    }
+
+    if (mountedRef.current && marketData.length > 0) {
+      setData(marketData);
+      setDataSource(`${activeSources} APIs aggregated`);
+      setLastFetch(Date.now());
+      setLoading(false);
     }
   }, []);
 
-  // Initial fetch and setup interval
+  // Initial fetch and setup 1-second interval
   useEffect(() => {
     mountedRef.current = true;
     
     // Initial fetch
     fetchMarketData();
     
-    // Setup auto-refresh interval
+    // Setup 1-second auto-refresh
     intervalRef.current = setInterval(fetchMarketData, refreshInterval);
     
     return () => {
@@ -349,5 +599,6 @@ export function useMarketData(refreshInterval: number = 10000): UseMarketDataRet
     refresh,
     getPairData,
     dataSource,
+    apiStatus,
   };
 }

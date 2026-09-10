@@ -97,7 +97,7 @@ const defaultStrategy = {
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket, dataSource } = useMarketData(30000);
+  const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket, dataSource, apiStatus } = useMarketData(1000);
   const { 
     signals: aiSignals, 
     latestSignal, 
@@ -913,7 +913,7 @@ export default function Dashboard() {
 
           {/* Settings Tab */}
           <TabsContent value="settings" className="space-y-6">
-            <SettingsTab onSave={handleSaveSettings} currentDataSource={dataSource} refreshInterval={10} />
+            <SettingsTab onSave={handleSaveSettings} currentDataSource={dataSource} refreshInterval={1} apiStatus={apiStatus} />
           </TabsContent>
         </Tabs>
       </div>

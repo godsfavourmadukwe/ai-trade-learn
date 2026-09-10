@@ -17,38 +17,31 @@ import {
   Eye,
   EyeOff,
   Zap,
-  TrendingUp,
-  Clock
+  Clock,
+  Server
 } from "lucide-react";
 
 interface ApiConfig {
-  bybitApiKey: string;
-  bybitApiSecret: string;
   binanceApiKey: string;
   binanceApiSecret: string;
+  bybitApiKey: string;
+  bybitApiSecret: string;
   openaiApiKey: string;
-}
-
-interface ServiceStatus {
-  name: string;
-  status: "connected" | "disconnected" | "error" | "limited";
-  lastChecked: number | null;
-  description: string;
-  isPrimary?: boolean;
 }
 
 interface SettingsTabProps {
   onSave: (config: ApiConfig) => void;
   currentDataSource?: string;
   refreshInterval?: number;
+  apiStatus?: Record<string, "connected" | "error" | "loading">;
 }
 
-export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }: SettingsTabProps) {
+export function SettingsTab({ onSave, currentDataSource, refreshInterval = 1, apiStatus = {} }: SettingsTabProps) {
   const [config, setConfig] = useState<ApiConfig>({
-    bybitApiKey: "",
-    bybitApiSecret: "",
     binanceApiKey: "",
     binanceApiSecret: "",
+    bybitApiKey: "",
+    bybitApiSecret: "",
     openaiApiKey: "",
   });
   
@@ -56,39 +49,50 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
   const [hasChanges, setHasChanges] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const [services, setServices] = useState<ServiceStatus[]>([
+  const services = [
     {
-      name: "Bybit API",
-      status: "connected",
-      lastChecked: Date.now(),
-      description: "Primary market data source - Free, no key required",
+      name: "Bybit",
+      key: "bybit",
+      description: "Primary exchange API - Real-time spot data",
       isPrimary: true,
+      url: "https://www.bybit.com",
     },
     {
-      name: "CoinGecko API",
-      status: "connected",
-      lastChecked: Date.now(),
-      description: "Backup data source with market cap info",
+      name: "Binance",
+      key: "binance",
+      description: "Largest exchange - Deep liquidity",
+      isPrimary: true,
+      url: "https://www.binance.com",
     },
     {
-      name: "Binance API",
-      status: "disconnected",
-      lastChecked: null,
-      description: "Alternative exchange for live trading",
+      name: "CoinGecko",
+      key: "coingecko",
+      description: "Market data aggregator - Market cap info",
+      isPrimary: false,
+      url: "https://www.coingecko.com",
     },
     {
-      name: "AI Analysis Engine",
-      status: "connected",
-      lastChecked: Date.now(),
-      description: "Pattern recognition and trade recommendations",
+      name: "CryptoCompare",
+      key: "cryptocompare",
+      description: "Historical data & real-time pricing",
+      isPrimary: false,
+      url: "https://www.cryptocompare.com",
     },
     {
-      name: "Risk Management",
-      status: "connected",
-      lastChecked: Date.now(),
-      description: "Position sizing and portfolio protection",
+      name: "Kraken",
+      key: "kraken",
+      description: "European exchange - High security",
+      isPrimary: false,
+      url: "https://www.kraken.com",
     },
-  ]);
+    {
+      name: "CoinMarketCap",
+      key: "coinmarketcap",
+      description: "Market cap rankings & data",
+      isPrimary: false,
+      url: "https://coinmarketcap.com",
+    },
+  ];
 
   // Load saved config from localStorage
   useEffect(() => {
@@ -100,72 +104,6 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
         console.error("Failed to load saved config:", e);
       }
     }
-  }, []);
-
-  // Check API status
-  const checkApiStatus = async () => {
-    // Check Bybit
-    try {
-      const response = await fetch(
-        "https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT",
-        { method: "GET" }
-      );
-      
-      const result = await response.json();
-      const isConnected = result.retCode === 0;
-      
-      setServices(prev => prev.map(s => 
-        s.name === "Bybit API" 
-          ? { ...s, status: isConnected ? "connected" : "error", lastChecked: Date.now() }
-          : s
-      ));
-    } catch {
-      setServices(prev => prev.map(s => 
-        s.name === "Bybit API" 
-          ? { ...s, status: "error", lastChecked: Date.now() }
-          : s
-      ));
-    }
-
-    // Check CoinGecko
-    try {
-      const response = await fetch("https://api.coingecko.com/api/v3/ping");
-      setServices(prev => prev.map(s => 
-        s.name === "CoinGecko API" 
-          ? { ...s, status: response.ok ? "connected" : "error", lastChecked: Date.now() }
-          : s
-      ));
-    } catch {
-      setServices(prev => prev.map(s => 
-        s.name === "CoinGecko API" 
-          ? { ...s, status: "error", lastChecked: Date.now() }
-          : s
-      ));
-    }
-
-    // Check Binance (if API key provided)
-    if (config.binanceApiKey) {
-      try {
-        const response = await fetch("https://api.binance.com/api/v3/ping");
-        setServices(prev => prev.map(s => 
-          s.name === "Binance API" 
-            ? { ...s, status: response.ok ? "connected" : "error", lastChecked: Date.now() }
-            : s
-        ));
-      } catch {
-        setServices(prev => prev.map(s => 
-          s.name === "Binance API" 
-            ? { ...s, status: "error", lastChecked: Date.now() }
-            : s
-        ));
-      }
-    }
-  };
-
-  useEffect(() => {
-    checkApiStatus();
-    const interval = setInterval(checkApiStatus, 60000);
-    return () => clearInterval(interval);
   }, []);
 
   const handleChange = (key: keyof ApiConfig, value: string) => {
@@ -184,173 +122,175 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
     setHasChanges(false);
     setSaving(false);
     localStorage.setItem("tradslly_api_config", JSON.stringify(config));
-    checkApiStatus();
   };
 
-  const formatTime = (timestamp: number | null) => {
-    if (!timestamp) return "Never";
-    const diff = Date.now() - timestamp;
-    if (diff < 60000) return "Just now";
-    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-    return new Date(timestamp).toLocaleTimeString();
+  const getStatusForService = (key: string): "connected" | "error" | "loading" => {
+    return apiStatus[key] || "loading";
   };
+
+  const connectedCount = Object.values(apiStatus).filter(s => s === "connected").length;
 
   return (
     <div className="space-y-6">
-      {/* Active Data Source & Refresh Status */}
+      {/* Live Data Status */}
       <Card className="bg-[#111118] border-white/[0.08]">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
             <Activity className="w-4 h-4 text-emerald-400" />
-            Live Data Status
+            Multi-API Market Feed
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid md:grid-cols-3 gap-4">
             <div className="p-4 rounded-xl bg-gradient-to-r from-violet-500/10 to-cyan-500/10 border border-violet-500/20">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-violet-500/20 flex items-center justify-center">
-                    <Zap className="w-5 h-5 text-violet-400" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold text-white">
-                      {currentDataSource || "Bybit"}
-                    </h4>
-                    <p className="text-xs text-zinc-400">Active data source</p>
-                  </div>
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-violet-500/20 flex items-center justify-center">
+                  <Server className="w-5 h-5 text-violet-400" />
                 </div>
-                <StatusBadge status="success" label="Connected" />
+                <div>
+                  <h4 className="text-sm font-bold text-white">
+                    {connectedCount} / 6 APIs Active
+                  </h4>
+                  <p className="text-xs text-zinc-400">Aggregated for accuracy</p>
+                </div>
               </div>
             </div>
             
             <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
-                    <Clock className="w-5 h-5 text-cyan-400" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold text-white">Auto-Refresh</h4>
-                    <p className="text-xs text-zinc-400">Every {refreshInterval} seconds</p>
-                  </div>
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
+                  <Clock className="w-5 h-5 text-cyan-400" />
                 </div>
-                <StatusBadge status="success" label="Active" />
+                <div>
+                  <h4 className="text-sm font-bold text-white">1-Second Updates</h4>
+                  <p className="text-xs text-zinc-400">Real-time price feed</p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-emerald-500/20 flex items-center justify-center">
+                  <Zap className="w-5 h-5 text-emerald-400" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white">Median Price</h4>
+                  <p className="text-xs text-zinc-400">Cross-exchange validation</p>
+                </div>
               </div>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Service Status */}
+      {/* API Status Grid */}
       <Card className="bg-[#111118] border-white/[0.08]">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
-            <Activity className="w-4 h-4 text-emerald-400" />
-            Connected Services
+            <Server className="w-4 h-4 text-violet-400" />
+            Connected Exchanges & APIs
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid md:grid-cols-2 gap-4">
-            {services.map(service => (
-              <div
-                key={service.name}
-                className={`p-4 rounded-xl border ${
-                  service.isPrimary 
-                    ? "bg-violet-500/5 border-violet-500/20" 
-                    : "bg-white/[0.03] border-white/[0.08]"
-                }`}
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-bold text-white">{service.name}</h4>
-                      {service.isPrimary && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300">
-                          Primary
-                        </span>
-                      )}
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {services.map(service => {
+              const status = getStatusForService(service.key);
+              return (
+                <div
+                  key={service.key}
+                  className={`p-4 rounded-xl border transition-all ${
+                    service.isPrimary 
+                      ? "bg-violet-500/5 border-violet-500/20" 
+                      : "bg-white/[0.03] border-white/[0.08]"
+                  }`}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-bold text-white">{service.name}</h4>
+                        {service.isPrimary && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-300 font-medium">
+                            PRIMARY
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-zinc-500 mt-1">{service.description}</p>
                     </div>
-                    <p className="text-xs text-zinc-500 mt-1">{service.description}</p>
+                    <StatusBadge
+                      status={status === "connected" ? "success" : status === "error" ? "error" : "warning"}
+                      label={status === "connected" ? "Live" : status === "error" ? "Error" : "Checking"}
+                    />
                   </div>
-                  <StatusBadge
-                    status={service.status === "connected" ? "success" : service.status === "error" ? "error" : "inactive"}
-                    label={service.status.charAt(0).toUpperCase() + service.status.slice(1)}
-                  />
+                  <a
+                    href={service.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-violet-400"
+                  >
+                    Visit {service.name}
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
                 </div>
-                <div className="text-xs text-zinc-500 mt-3">
-                  Last checked: {formatTime(service.lastChecked)}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
-          
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={checkApiStatus}
-            className="mt-4 border-white/[0.08] hover:bg-white/[0.05]"
-          >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh Status
-          </Button>
         </CardContent>
       </Card>
 
-      {/* API Keys Configuration */}
+      {/* How Aggregation Works */}
+      <Card className="bg-[#111118] border-white/[0.08]">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-400" />
+            Price Aggregation Method
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+            <p className="text-sm text-zinc-400 mb-4">
+              TRADSLY aggregates prices from all 6 APIs simultaneously and uses the <span className="text-white font-bold">median price</span> for maximum accuracy. This cross-validation prevents manipulation and ensures you get the true market price.
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: "Data Sources", value: "6 APIs" },
+                { label: "Update Speed", value: "1 second" },
+                { label: "Validation", value: "Median" },
+                { label: "Fallback", value: "Auto" },
+              ].map(item => (
+                <div key={item.label} className="text-center p-3 rounded-lg bg-white/[0.02]">
+                  <div className="text-xs text-zinc-500">{item.label}</div>
+                  <div className="text-sm font-bold text-white mt-1">{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* API Keys (Optional - for trading) */}
       <Card className="bg-[#111118] border-white/[0.08]">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
             <Key className="w-4 h-4 text-amber-400" />
-            API Keys & Credentials
+            Trading API Keys (Optional)
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Bybit - Free */}
-          <div className="p-4 rounded-xl bg-violet-500/5 border border-violet-500/20">
-            <div className="flex items-center gap-3 mb-3">
-              <CheckCircle className="w-5 h-5 text-violet-400" />
-              <div>
-                <h4 className="text-sm font-bold text-white">Bybit API</h4>
-                <p className="text-xs text-zinc-400">Free tier - Real-time market data, no key required</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-violet-400">
-              <Zap className="w-3 h-3" />
-              <span>Currently active - Fetching live prices every {refreshInterval} seconds</span>
-            </div>
-            <p className="text-xs text-zinc-500 mt-2">
-              Bybit provides free real-time cryptocurrency market data including BTC, ETH, SOL, and more.
-              No API key needed for public market data endpoints.
-            </p>
-          </div>
+          <p className="text-xs text-zinc-500">
+            Market data is free and requires no keys. API keys are only needed if you want to execute trades directly through TRADSLY.
+          </p>
 
-          {/* CoinGecko - Free Backup */}
-          <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
-            <div className="flex items-center gap-3 mb-3">
-              <CheckCircle className="w-5 h-5 text-emerald-400" />
-              <div>
-                <h4 className="text-sm font-bold text-white">CoinGecko API</h4>
-                <p className="text-xs text-zinc-400">Free tier - Backup data source with market cap info</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-emerald-400">
-              <Zap className="w-3 h-3" />
-              <span>Active as backup when Bybit is unavailable</span>
-            </div>
-          </div>
-
-          {/* Bybit Trading (Optional) */}
+          {/* Bybit Trading */}
           <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
             <div className="flex items-center gap-3 mb-4">
               <Database className="w-5 h-5 text-cyan-400" />
               <div>
-                <h4 className="text-sm font-bold text-white">Bybit Trading API (Optional)</h4>
-                <p className="text-xs text-zinc-400">For live trading execution on Bybit</p>
+                <h4 className="text-sm font-bold text-white">Bybit Trading</h4>
+                <p className="text-xs text-zinc-400">Execute trades on Bybit</p>
               </div>
             </div>
             
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div>
                 <Label className="text-xs text-zinc-400">API Key</Label>
                 <div className="relative mt-1">
@@ -358,7 +298,7 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
                     type={showSecrets.bybitApiKey ? "text" : "password"}
                     value={config.bybitApiKey}
                     onChange={(e) => handleChange("bybitApiKey", e.target.value)}
-                    placeholder="Enter your Bybit API key"
+                    placeholder="Enter Bybit API key"
                     className="bg-white/[0.03] border-white/[0.08] pr-10"
                   />
                   <button
@@ -378,7 +318,7 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
                     type={showSecrets.bybitApiSecret ? "text" : "password"}
                     value={config.bybitApiSecret}
                     onChange={(e) => handleChange("bybitApiSecret", e.target.value)}
-                    placeholder="Enter your Bybit API secret"
+                    placeholder="Enter Bybit API secret"
                     className="bg-white/[0.03] border-white/[0.08] pr-10"
                   />
                   <button
@@ -392,12 +332,75 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
               </div>
               
               <a
-                href="https://www.bybit.com/en/my/settings/api-management"
+                href="https://www.bybit.com/app/user/api-management"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300"
               >
-                Get API keys from Bybit
+                Get Bybit API keys
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          </div>
+
+          {/* Binance Trading */}
+          <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+            <div className="flex items-center gap-3 mb-4">
+              <Database className="w-5 h-5 text-amber-400" />
+              <div>
+                <h4 className="text-sm font-bold text-white">Binance Trading</h4>
+                <p className="text-xs text-zinc-400">Execute trades on Binance</p>
+              </div>
+            </div>
+            
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs text-zinc-400">API Key</Label>
+                <div className="relative mt-1">
+                  <Input
+                    type={showSecrets.binanceApiKey ? "text" : "password"}
+                    value={config.binanceApiKey}
+                    onChange={(e) => handleChange("binanceApiKey", e.target.value)}
+                    placeholder="Enter Binance API key"
+                    className="bg-white/[0.03] border-white/[0.08] pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleShowSecret("binanceApiKey")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
+                  >
+                    {showSecrets.binanceApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+              
+              <div>
+                <Label className="text-xs text-zinc-400">API Secret</Label>
+                <div className="relative mt-1">
+                  <Input
+                    type={showSecrets.binanceApiSecret ? "text" : "password"}
+                    value={config.binanceApiSecret}
+                    onChange={(e) => handleChange("binanceApiSecret", e.target.value)}
+                    placeholder="Enter Binance API secret"
+                    className="bg-white/[0.03] border-white/[0.08] pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleShowSecret("binanceApiSecret")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
+                  >
+                    {showSecrets.binanceApiSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+              
+              <a
+                href="https://www.binance.com/en/my/settings/api-management"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300"
+              >
+                Get Binance API keys
                 <ExternalLink className="w-3 h-3" />
               </a>
             </div>
@@ -408,8 +411,8 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
             <div className="flex items-center gap-3 mb-4">
               <Shield className="w-5 h-5 text-violet-400" />
               <div>
-                <h4 className="text-sm font-bold text-white">OpenAI API (Optional)</h4>
-                <p className="text-xs text-zinc-400">For enhanced AI pattern analysis</p>
+                <h4 className="text-sm font-bold text-white">OpenAI (Optional)</h4>
+                <p className="text-xs text-zinc-400">Enhanced AI pattern analysis</p>
               </div>
             </div>
             
@@ -420,7 +423,7 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
                   type={showSecrets.openaiApiKey ? "text" : "password"}
                   value={config.openaiApiKey}
                   onChange={(e) => handleChange("openaiApiKey", e.target.value)}
-                  placeholder="Enter your OpenAI API key"
+                  placeholder="Enter OpenAI API key"
                   className="bg-white/[0.03] border-white/[0.08] pr-10"
                 />
                 <button
@@ -431,16 +434,6 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
                   {showSecrets.openaiApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              
-              <a
-                href="https://platform.openai.com/api-keys"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 mt-2"
-              >
-                Get API key from OpenAI
-                <ExternalLink className="w-3 h-3" />
-              </a>
             </div>
           </div>
 
@@ -471,7 +464,7 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
         </CardContent>
       </Card>
 
-      {/* Security Notice */}
+      {/* Security */}
       <Card className="bg-[#111118] border-white/[0.08]">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
@@ -483,19 +476,15 @@ export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }:
           <div className="space-y-3 text-sm text-zinc-400">
             <div className="flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+              <p>Market data from all 6 APIs is free and requires no authentication.</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+              <p>Trading API keys are only needed when you want to execute live trades.</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
               <p>API keys are stored locally in your browser and never sent to our servers.</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-              <p>Bybit and CoinGecko APIs are free and don't require API keys for market data.</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-              <p>For Bybit trading, we recommend creating API keys with trade-only permissions.</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-              <p>Never share your API secrets. Enable IP whitelisting for extra security.</p>
             </div>
           </div>
         </CardContent>
