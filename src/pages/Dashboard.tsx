@@ -349,6 +349,7 @@ export default function Dashboard() {
                       <LivePriceChart
                         currentPrice={selectedPairData.price}
                         symbol={selectedPairData.symbol}
+                        priceHistory={selectedPairData.priceHistory}
                         height={280}
                       />
                     </div>

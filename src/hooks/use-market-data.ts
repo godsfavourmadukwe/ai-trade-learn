@@ -156,20 +156,7 @@ const DISPLAY_NAMES: Record<string, string> = {
 // Price history cache
 const priceHistoryCache: Record<string, number[]> = {};
 
-function generatePriceHistory(currentPrice: number, points: number = 100): number[] {
-  const history: number[] = [];
-  let price = currentPrice * 0.97;
-  
-  for (let i = 0; i < points; i++) {
-    const change = (Math.random() - 0.48) * (currentPrice * 0.005);
-    price = Math.max(price + change, currentPrice * 0.94);
-    price = Math.min(price, currentPrice * 1.06);
-    history.push(price);
-  }
-  
-  history[history.length - 1] = currentPrice;
-  return history;
-}
+// No random fake history — we only track real prices as they arrive
 
 // API 1: Bybit
 async function fetchBybit(): Promise<Record<string, { price: number; high: number; low: number; volume: number }>> {
@@ -419,7 +406,7 @@ function getFallbackData(): MarketData[] {
     low24h: pair.price * 0.95,
     open: pair.price * 0.99,
     previousClose: pair.price * 0.98,
-    priceHistory: generatePriceHistory(pair.price),
+    priceHistory: [pair.price],
     lastUpdated: Date.now(),
     source: "demo",
     priceSources: {},
@@ -514,18 +501,15 @@ export function useMarketData(refreshInterval: number = 5000): UseMarketDataRetu
       
       if (aggregated.price > 0) {
         // Update price history cache
-        if (!priceHistoryCache[symbol] || priceHistoryCache[symbol].length === 0) {
-          priceHistoryCache[symbol] = generatePriceHistory(aggregated.price);
-        } else {
+        if (!priceHistoryCache[symbol]) {
+          // Seed with current price so the chart has data on first render
+          priceHistoryCache[symbol] = Array(30).fill(aggregated.price);
+        }
+        {
           const history = priceHistoryCache[symbol];
-          const lastPrice = history[history.length - 1];
-          
-          // Only add new point if price changed
-          if (Math.abs(aggregated.price - lastPrice) / lastPrice > 0.0001) {
-            history.push(aggregated.price);
-            if (history.length > 200) {
-              history.shift();
-            }
+          history.push(aggregated.price);
+          if (history.length > 200) {
+            history.shift();
           }
         }
 
