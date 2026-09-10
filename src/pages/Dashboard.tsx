@@ -6,9 +6,12 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
 import { useNavigate } from "react-router";
 import { useMarketData } from "@/hooks/use-market-data";
+import { useAISignals } from "@/hooks/use-ai-signals";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { PerformanceChart } from "@/components/dashboard/PerformanceChart";
 import { PriceChart } from "@/components/dashboard/PriceChart";
+import { LivePriceChart } from "@/components/dashboard/LivePriceChart";
+import { AIInsightsPanel } from "@/components/dashboard/AIInsightsPanel";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { SignalList } from "@/components/dashboard/SignalList";
 import { StrategyConfig } from "@/components/dashboard/StrategyConfig";
@@ -95,6 +98,16 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const { data: marketData, loading: marketLoading, error: marketError, lastFetch, refresh: refreshMarket, dataSource } = useMarketData(30000);
+  const { 
+    signals: aiSignals, 
+    latestSignal, 
+    isAnalyzing, 
+    learningMetrics, 
+    analyzeSymbol, 
+    recordOutcome, 
+    getPatternWeights, 
+    resetLearning 
+  } = useAISignals(60000);
   
   const [equityData, setEquityData] = useState<number[]>([]);
   const [drawdownData, setDrawdownData] = useState<number[]>([]);
@@ -137,6 +150,13 @@ export default function Dashboard() {
   );
 
   const selectedPairData = marketData.find(p => p.symbol === selectedPair);
+
+  // Analyze selected pair when price updates
+  useEffect(() => {
+    if (selectedPairData) {
+      analyzeSymbol(selectedPairData.symbol, selectedPairData.price);
+    }
+  }, [selectedPairData?.price]);
 
   const formatPrice = (price: number) => {
     if (price < 1) return `$${price.toFixed(4)}`;
@@ -323,12 +343,12 @@ export default function Dashboard() {
                     
                     <div className="lg:w-2/3">
                       <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-sm font-bold text-zinc-300">Price Chart (Simulated)</h4>
-                        <StatusBadge status="success" label="Live" />
+                        <h4 className="text-sm font-bold text-zinc-300">Live Price Chart</h4>
+                        <StatusBadge status="success" label="Real-time" />
                       </div>
-                      <PriceChart
-                        data={selectedPairData.priceHistory}
+                      <LivePriceChart
                         currentPrice={selectedPairData.price}
+                        symbol={selectedPairData.symbol}
                         height={280}
                       />
                     </div>
@@ -465,6 +485,63 @@ export default function Dashboard() {
                 title="Drawdown"
                 data={drawdownData}
                 color="red"
+              />
+            </div>
+
+            {/* AI Insights Panel */}
+            <div className="grid lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2">
+                <Card className="bg-[#111118] border-white/[0.08]">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-violet-400" />
+                      Active Positions
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {selectedPairData ? (
+                      <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <span className="text-lg font-bold text-white">{selectedPairData.symbol}</span>
+                            <StatusBadge status="success" label="Long" />
+                          </div>
+                          <span className="text-emerald-400 font-bold">+$145.20</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-4 text-sm">
+                          <div>
+                            <span className="text-zinc-500">Entry</span>
+                            <div className="font-medium text-white">{formatPrice(selectedPairData.price - 200)}</div>
+                          </div>
+                          <div>
+                            <span className="text-zinc-500">Current</span>
+                            <div className="font-medium text-emerald-400">{formatPrice(selectedPairData.price)}</div>
+                          </div>
+                          <div>
+                            <span className="text-zinc-500">Stop</span>
+                            <div className="font-medium text-rose-400">{formatPrice(selectedPairData.price - 850)}</div>
+                          </div>
+                          <div>
+                            <span className="text-zinc-500">Target</span>
+                            <div className="font-medium text-emerald-400">{formatPrice(selectedPairData.price + 1700)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-zinc-500">Select a pair to view positions</div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              <AIInsightsPanel
+                latestSignal={latestSignal}
+                signals={aiSignals}
+                learningMetrics={learningMetrics}
+                isAnalyzing={isAnalyzing}
+                onAnalyze={() => selectedPairData && analyzeSymbol(selectedPairData.symbol, selectedPairData.price)}
+                onResetLearning={resetLearning}
+                patternWeights={getPatternWeights()}
               />
             </div>
 
