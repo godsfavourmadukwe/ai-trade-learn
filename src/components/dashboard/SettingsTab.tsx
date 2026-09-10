@@ -17,12 +17,13 @@ import {
   Eye,
   EyeOff,
   Zap,
-  TrendingUp
+  TrendingUp,
+  Clock
 } from "lucide-react";
 
 interface ApiConfig {
-  coingeckoApiKey: string;
-  yahooFinanceApiKey: string;
+  bybitApiKey: string;
+  bybitApiSecret: string;
   binanceApiKey: string;
   binanceApiSecret: string;
   openaiApiKey: string;
@@ -39,12 +40,13 @@ interface ServiceStatus {
 interface SettingsTabProps {
   onSave: (config: ApiConfig) => void;
   currentDataSource?: string;
+  refreshInterval?: number;
 }
 
-export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
+export function SettingsTab({ onSave, currentDataSource, refreshInterval = 10 }: SettingsTabProps) {
   const [config, setConfig] = useState<ApiConfig>({
-    coingeckoApiKey: "",
-    yahooFinanceApiKey: "",
+    bybitApiKey: "",
+    bybitApiSecret: "",
     binanceApiKey: "",
     binanceApiSecret: "",
     openaiApiKey: "",
@@ -56,10 +58,10 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
 
   const [services, setServices] = useState<ServiceStatus[]>([
     {
-      name: "Yahoo Finance",
+      name: "Bybit API",
       status: "connected",
       lastChecked: Date.now(),
-      description: "Free real-time market data (no API key required)",
+      description: "Primary market data source - Free, no key required",
       isPrimary: true,
     },
     {
@@ -72,7 +74,7 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
       name: "Binance API",
       status: "disconnected",
       lastChecked: null,
-      description: "Live exchange data and trading execution",
+      description: "Alternative exchange for live trading",
     },
     {
       name: "AI Analysis Engine",
@@ -100,31 +102,26 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
     }
   }, []);
 
-  // Check API status on mount
-  useEffect(() => {
-    checkApiStatus();
-  }, []);
-
+  // Check API status
   const checkApiStatus = async () => {
-    // Check Yahoo Finance
+    // Check Bybit
     try {
       const response = await fetch(
-        "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?interval=1d&range=1d",
-        {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          },
-        }
+        "https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT",
+        { method: "GET" }
       );
       
+      const result = await response.json();
+      const isConnected = result.retCode === 0;
+      
       setServices(prev => prev.map(s => 
-        s.name === "Yahoo Finance" 
-          ? { ...s, status: response.ok ? "connected" : "error", lastChecked: Date.now() }
+        s.name === "Bybit API" 
+          ? { ...s, status: isConnected ? "connected" : "error", lastChecked: Date.now() }
           : s
       ));
     } catch {
       setServices(prev => prev.map(s => 
-        s.name === "Yahoo Finance" 
+        s.name === "Bybit API" 
           ? { ...s, status: "error", lastChecked: Date.now() }
           : s
       ));
@@ -132,10 +129,7 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
 
     // Check CoinGecko
     try {
-      const response = await fetch(
-        "https://api.coingecko.com/api/v3/ping"
-      );
-      
+      const response = await fetch("https://api.coingecko.com/api/v3/ping");
       setServices(prev => prev.map(s => 
         s.name === "CoinGecko API" 
           ? { ...s, status: response.ok ? "connected" : "error", lastChecked: Date.now() }
@@ -168,6 +162,12 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
     }
   };
 
+  useEffect(() => {
+    checkApiStatus();
+    const interval = setInterval(checkApiStatus, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
   const handleChange = (key: keyof ApiConfig, value: string) => {
     setConfig(prev => ({ ...prev, [key]: value }));
     setHasChanges(true);
@@ -189,34 +189,54 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
 
   const formatTime = (timestamp: number | null) => {
     if (!timestamp) return "Never";
+    const diff = Date.now() - timestamp;
+    if (diff < 60000) return "Just now";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
     return new Date(timestamp).toLocaleTimeString();
   };
 
   return (
     <div className="space-y-6">
-      {/* Active Data Source */}
+      {/* Active Data Source & Refresh Status */}
       <Card className="bg-[#111118] border-white/[0.08]">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-bold text-zinc-300 flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-violet-400" />
-            Active Data Source
+            <Activity className="w-4 h-4 text-emerald-400" />
+            Live Data Status
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="p-4 rounded-xl bg-gradient-to-r from-violet-500/10 to-cyan-500/10 border border-violet-500/20">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-violet-500/20 flex items-center justify-center">
-                  <Zap className="w-5 h-5 text-violet-400" />
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="p-4 rounded-xl bg-gradient-to-r from-violet-500/10 to-cyan-500/10 border border-violet-500/20">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-violet-500/20 flex items-center justify-center">
+                    <Zap className="w-5 h-5 text-violet-400" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">
+                      {currentDataSource || "Bybit"}
+                    </h4>
+                    <p className="text-xs text-zinc-400">Active data source</p>
+                  </div>
                 </div>
-                <div>
-                  <h4 className="text-sm font-bold text-white">
-                    {currentDataSource || "Yahoo Finance"}
-                  </h4>
-                  <p className="text-xs text-zinc-400">Real-time market data</p>
-                </div>
+                <StatusBadge status="success" label="Connected" />
               </div>
-              <StatusBadge status="success" label="Active" />
+            </div>
+            
+            <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
+                    <Clock className="w-5 h-5 text-cyan-400" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">Auto-Refresh</h4>
+                    <p className="text-xs text-zinc-400">Every {refreshInterval} seconds</p>
+                  </div>
+                </div>
+                <StatusBadge status="success" label="Active" />
+              </div>
             </div>
           </div>
         </CardContent>
@@ -254,7 +274,7 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
                     <p className="text-xs text-zinc-500 mt-1">{service.description}</p>
                   </div>
                   <StatusBadge
-                    status={service.status === "connected" ? "success" : service.status === "error" ? "error" : service.status === "limited" ? "warning" : "inactive"}
+                    status={service.status === "connected" ? "success" : service.status === "error" ? "error" : "inactive"}
                     label={service.status.charAt(0).toUpperCase() + service.status.slice(1)}
                   />
                 </div>
@@ -286,22 +306,22 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Yahoo Finance - Free */}
+          {/* Bybit - Free */}
           <div className="p-4 rounded-xl bg-violet-500/5 border border-violet-500/20">
             <div className="flex items-center gap-3 mb-3">
               <CheckCircle className="w-5 h-5 text-violet-400" />
               <div>
-                <h4 className="text-sm font-bold text-white">Yahoo Finance API</h4>
-                <p className="text-xs text-zinc-400">Free tier - No API key required for real-time data</p>
+                <h4 className="text-sm font-bold text-white">Bybit API</h4>
+                <p className="text-xs text-zinc-400">Free tier - Real-time market data, no key required</p>
               </div>
             </div>
             <div className="flex items-center gap-2 text-xs text-violet-400">
               <Zap className="w-3 h-3" />
-              <span>Currently active and fetching real-time prices from Yahoo Finance</span>
+              <span>Currently active - Fetching live prices every {refreshInterval} seconds</span>
             </div>
             <p className="text-xs text-zinc-500 mt-2">
-              Yahoo Finance provides free real-time cryptocurrency data including BTC, ETH, SOL, and more.
-              No API key needed - data is fetched directly from their public endpoints.
+              Bybit provides free real-time cryptocurrency market data including BTC, ETH, SOL, and more.
+              No API key needed for public market data endpoints.
             </p>
           </div>
 
@@ -316,17 +336,17 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
             </div>
             <div className="flex items-center gap-2 text-xs text-emerald-400">
               <Zap className="w-3 h-3" />
-              <span>Active as backup when Yahoo Finance is unavailable</span>
+              <span>Active as backup when Bybit is unavailable</span>
             </div>
           </div>
 
-          {/* Binance */}
+          {/* Bybit Trading (Optional) */}
           <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.08]">
             <div className="flex items-center gap-3 mb-4">
-              <Database className="w-5 h-5 text-amber-400" />
+              <Database className="w-5 h-5 text-cyan-400" />
               <div>
-                <h4 className="text-sm font-bold text-white">Binance API (Optional)</h4>
-                <p className="text-xs text-zinc-400">For live trading execution and advanced market data</p>
+                <h4 className="text-sm font-bold text-white">Bybit Trading API (Optional)</h4>
+                <p className="text-xs text-zinc-400">For live trading execution on Bybit</p>
               </div>
             </div>
             
@@ -335,18 +355,18 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
                 <Label className="text-xs text-zinc-400">API Key</Label>
                 <div className="relative mt-1">
                   <Input
-                    type={showSecrets.binanceApiKey ? "text" : "password"}
-                    value={config.binanceApiKey}
-                    onChange={(e) => handleChange("binanceApiKey", e.target.value)}
-                    placeholder="Enter your Binance API key"
+                    type={showSecrets.bybitApiKey ? "text" : "password"}
+                    value={config.bybitApiKey}
+                    onChange={(e) => handleChange("bybitApiKey", e.target.value)}
+                    placeholder="Enter your Bybit API key"
                     className="bg-white/[0.03] border-white/[0.08] pr-10"
                   />
                   <button
                     type="button"
-                    onClick={() => toggleShowSecret("binanceApiKey")}
+                    onClick={() => toggleShowSecret("bybitApiKey")}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
                   >
-                    {showSecrets.binanceApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    {showSecrets.bybitApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
@@ -355,29 +375,29 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
                 <Label className="text-xs text-zinc-400">API Secret</Label>
                 <div className="relative mt-1">
                   <Input
-                    type={showSecrets.binanceApiSecret ? "text" : "password"}
-                    value={config.binanceApiSecret}
-                    onChange={(e) => handleChange("binanceApiSecret", e.target.value)}
-                    placeholder="Enter your Binance API secret"
+                    type={showSecrets.bybitApiSecret ? "text" : "password"}
+                    value={config.bybitApiSecret}
+                    onChange={(e) => handleChange("bybitApiSecret", e.target.value)}
+                    placeholder="Enter your Bybit API secret"
                     className="bg-white/[0.03] border-white/[0.08] pr-10"
                   />
                   <button
                     type="button"
-                    onClick={() => toggleShowSecret("binanceApiSecret")}
+                    onClick={() => toggleShowSecret("bybitApiSecret")}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
                   >
-                    {showSecrets.binanceApiSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    {showSecrets.bybitApiSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
               
               <a
-                href="https://www.binance.com/en/my/settings/api-management"
+                href="https://www.bybit.com/en/my/settings/api-management"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300"
               >
-                Get API keys from Binance
+                Get API keys from Bybit
                 <ExternalLink className="w-3 h-3" />
               </a>
             </div>
@@ -389,7 +409,7 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
               <Shield className="w-5 h-5 text-violet-400" />
               <div>
                 <h4 className="text-sm font-bold text-white">OpenAI API (Optional)</h4>
-                <p className="text-xs text-zinc-400">For enhanced AI pattern analysis and recommendations</p>
+                <p className="text-xs text-zinc-400">For enhanced AI pattern analysis</p>
               </div>
             </div>
             
@@ -467,15 +487,15 @@ export function SettingsTab({ onSave, currentDataSource }: SettingsTabProps) {
             </div>
             <div className="flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-              <p>Yahoo Finance and CoinGecko APIs are free and don't require API keys for basic usage.</p>
+              <p>Bybit and CoinGecko APIs are free and don't require API keys for market data.</p>
             </div>
             <div className="flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-              <p>For Binance, we recommend creating read-only API keys for market data.</p>
+              <p>For Bybit trading, we recommend creating API keys with trade-only permissions.</p>
             </div>
             <div className="flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-              <p>Trading keys should only be created when you're ready to deploy with real funds.</p>
+              <p>Never share your API secrets. Enable IP whitelisting for extra security.</p>
             </div>
           </div>
         </CardContent>

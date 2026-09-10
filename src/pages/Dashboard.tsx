@@ -137,7 +137,7 @@ export default function Dashboard() {
     console.log("Saving strategy params:", params);
   };
 
-  const handleSaveSettings = (config: { coingeckoApiKey: string; binanceApiKey: string; binanceApiSecret: string; openaiApiKey: string }) => {
+  const handleSaveSettings = (config: { bybitApiKey: string; bybitApiSecret: string; binanceApiKey: string; binanceApiSecret: string; openaiApiKey: string }) => {
     console.log("Saving settings:", config);
     // Store in localStorage for demo
     localStorage.setItem("tradslly_api_config", JSON.stringify(config));
@@ -913,7 +913,7 @@ export default function Dashboard() {
 
           {/* Settings Tab */}
           <TabsContent value="settings" className="space-y-6">
-            <SettingsTab onSave={handleSaveSettings} currentDataSource={dataSource} />
+            <SettingsTab onSave={handleSaveSettings} currentDataSource={dataSource} refreshInterval={10} />
           </TabsContent>
         </Tabs>
       </div>

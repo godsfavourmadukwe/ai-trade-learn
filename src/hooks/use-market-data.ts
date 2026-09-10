@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface MarketData {
   symbol: string;
@@ -14,7 +14,7 @@ interface MarketData {
   previousClose: number;
   priceHistory: number[];
   lastUpdated: number;
-  source: "yahoo" | "coingecko" | "fallback";
+  source: "bybit" | "coingecko" | "fallback";
 }
 
 interface UseMarketDataReturn {
@@ -27,23 +27,23 @@ interface UseMarketDataReturn {
   dataSource: string;
 }
 
-// Yahoo Finance symbol mapping for crypto pairs
-const YAHOO_SYMBOLS: Record<string, string> = {
-  "BTC/USDT": "BTC-USD",
-  "ETH/USDT": "ETH-USD",
-  "SOL/USDT": "SOL-USD",
-  "BNB/USDT": "BNB-USD",
-  "XRP/USDT": "XRP-USD",
-  "ADA/USDT": "ADA-USD",
-  "DOGE/USDT": "DOGE-USD",
-  "AVAX/USDT": "AVAX-USD",
-  "DOT/USDT": "DOT-USD",
-  "LINK/USDT": "LINK-USD",
-  "MATIC/USDT": "MATIC-USD",
-  "UNI/USDT": "UNI-USD",
-  "ATOM/USDT": "ATOM-USD",
-  "LTC/USDT": "LTC-USD",
-  "FIL/USDT": "FIL-USD",
+// Bybit symbol mapping for crypto pairs
+const BYBIT_SYMBOLS: Record<string, string> = {
+  "BTC/USDT": "BTCUSDT",
+  "ETH/USDT": "ETHUSDT",
+  "SOL/USDT": "SOLUSDT",
+  "BNB/USDT": "BNBUSDT",
+  "XRP/USDT": "XRPUSDT",
+  "ADA/USDT": "ADAUSDT",
+  "DOGE/USDT": "DOGEUSDT",
+  "AVAX/USDT": "AVAXUSDT",
+  "DOT/USDT": "DOTUSDT",
+  "LINK/USDT": "LINKUSDT",
+  "MATIC/USDT": "MATICUSDT",
+  "UNI/USDT": "UNIUSDT",
+  "ATOM/USDT": "ATOMUSDT",
+  "LTC/USDT": "LTCUSDT",
+  "FIL/USDT": "FILUSDT",
 };
 
 // Display names
@@ -73,8 +73,9 @@ function generatePriceHistory(currentPrice: number, points: number = 100): numbe
   let price = currentPrice * 0.95;
   
   for (let i = 0; i < points; i++) {
-    const change = (Math.random() - 0.48) * (currentPrice * 0.02);
-    price = Math.max(price + change, currentPrice * 0.8);
+    const change = (Math.random() - 0.48) * (currentPrice * 0.008);
+    price = Math.max(price + change, currentPrice * 0.92);
+    price = Math.min(price, currentPrice * 1.08);
     history.push(price);
   }
   
@@ -82,71 +83,76 @@ function generatePriceHistory(currentPrice: number, points: number = 100): numbe
   return history;
 }
 
-// Fetch from Yahoo Finance API
-async function fetchYahooFinance(symbol: string): Promise<Partial<MarketData> | null> {
+// Fetch from Bybit API
+async function fetchBybitData(): Promise<MarketData[]> {
   try {
-    const yahooSymbol = YAHOO_SYMBOLS[symbol] || symbol;
-    
-    // Yahoo Finance v8 quote endpoint
+    // Bybit public API - get all tickers
     const response = await fetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d&range=1d`,
+      "https://api.bybit.com/v5/market/tickers?category=spot",
       {
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "application/json",
         },
       }
     );
 
     if (!response.ok) {
-      console.warn(`Yahoo Finance API error for ${symbol}: ${response.status}`);
-      return null;
+      throw new Error(`Bybit API error: ${response.status}`);
     }
 
-    const data = await response.json();
-    const result = data?.chart?.result?.[0];
+    const result = await response.json();
     
-    if (!result) {
-      console.warn(`No data returned from Yahoo Finance for ${symbol}`);
-      return null;
+    if (result.retCode !== 0 || !result.result?.list) {
+      throw new Error("Invalid Bybit API response");
     }
 
-    const quote = result.indicators?.quote?.[0];
-    const meta = result.meta;
-    
-    if (!quote || !meta) {
-      return null;
+    const tickers = result.result.list;
+    const marketData: MarketData[] = [];
+
+    for (const [displaySymbol, bybitSymbol] of Object.entries(BYBIT_SYMBOLS)) {
+      const ticker = tickers.find((t: any) => t.symbol === bybitSymbol);
+      
+      if (ticker) {
+        const price = parseFloat(ticker.lastPrice) || 0;
+        const prevPrice24h = parseFloat(ticker.prevPrice24h) || price;
+        const change24h = price - prevPrice24h;
+        const change24hPercent = prevPrice24h ? (change24h / prevPrice24h) * 100 : 0;
+        const high24h = parseFloat(ticker.highPrice24h) || price;
+        const low24h = parseFloat(ticker.lowPrice24h) || price;
+        const volume = parseFloat(ticker.turnover24h) || 0;
+        
+        // Update price history cache
+        if (!priceHistoryCache[displaySymbol] || priceHistoryCache[displaySymbol].length === 0) {
+          priceHistoryCache[displaySymbol] = generatePriceHistory(price);
+        } else {
+          const history = priceHistoryCache[displaySymbol];
+          history.shift();
+          history.push(price);
+        }
+
+        marketData.push({
+          symbol: displaySymbol,
+          name: DISPLAY_NAMES[displaySymbol] || displaySymbol.replace("/USDT", ""),
+          price,
+          change24h,
+          change24hPercent,
+          volume,
+          marketCap: 0,
+          high24h,
+          low24h,
+          open: prevPrice24h,
+          previousClose: prevPrice24h,
+          priceHistory: [...priceHistoryCache[displaySymbol]],
+          lastUpdated: Date.now(),
+          source: "bybit",
+        });
+      }
     }
 
-    // Get current price from meta or last close
-    const currentPrice = meta.regularMarketPrice || quote.close?.[quote.close.length - 1] || 0;
-    const previousClose = meta.chartPreviousClose || meta.previousClose || quote.close?.[0] || currentPrice;
-    
-    // Calculate 24h change
-    const change24h = currentPrice - previousClose;
-    const change24hPercent = previousClose ? (change24h / previousClose) * 100 : 0;
-    
-    // Get high/low from the day's data
-    const high24h = meta.regularMarketDayHigh || Math.max(...(quote.high || [currentPrice]));
-    const low24h = meta.regularMarketDayLow || Math.min(...(quote.low || [currentPrice]));
-    
-    // Get volume
-    const volume = meta.regularMarketVolume || quote.volume?.reduce((a: number, b: number) => a + (b || 0), 0) || 0;
-
-    return {
-      price: currentPrice,
-      change24h,
-      change24hPercent,
-      high24h,
-      low24h,
-      open: meta.regularMarketOpen || quote.open?.[0] || currentPrice,
-      previousClose,
-      volume,
-      lastUpdated: Date.now(),
-      source: "yahoo",
-    };
+    return marketData;
   } catch (error) {
-    console.error(`Error fetching Yahoo Finance for ${symbol}:`, error);
-    return null;
+    console.error("Bybit API error:", error);
+    throw error;
   }
 }
 
@@ -184,11 +190,11 @@ async function fetchCoinGecko(): Promise<MarketData[]> {
     if (coin) {
       const price = coin.current_price;
       
-      if (!priceHistoryCache[coinId] || priceHistoryCache[coinId].length === 0) {
-        priceHistoryCache[coinId] = generatePriceHistory(price);
+      if (!priceHistoryCache[symbol] || priceHistoryCache[symbol].length === 0) {
+        priceHistoryCache[symbol] = generatePriceHistory(price);
       } else {
-        priceHistoryCache[coinId].shift();
-        priceHistoryCache[coinId].push(price);
+        priceHistoryCache[symbol].shift();
+        priceHistoryCache[symbol].push(price);
       }
       
       marketData.push({
@@ -203,8 +209,8 @@ async function fetchCoinGecko(): Promise<MarketData[]> {
         low24h: coin.low_24h || price,
         open: price * 0.99,
         previousClose: price - (coin.price_change_24h || 0),
-        priceHistory: [...priceHistoryCache[coinId]],
-        lastUpdated: coin.last_updated ? new Date(coin.last_updated).getTime() : Date.now(),
+        priceHistory: [...priceHistoryCache[symbol]],
+        lastUpdated: Date.now(),
         source: "coingecko",
       });
     }
@@ -213,125 +219,7 @@ async function fetchCoinGecko(): Promise<MarketData[]> {
   return marketData;
 }
 
-export function useMarketData(refreshInterval: number = 30000): UseMarketDataReturn {
-  const [data, setData] = useState<MarketData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastFetch, setLastFetch] = useState<number | null>(null);
-  const [dataSource, setDataSource] = useState<string>("initializing");
-
-  const fetchMarketData = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      // Try Yahoo Finance first
-      let yahooResults: MarketData[] = [];
-      let yahooSuccess = 0;
-      
-      const symbols = Object.keys(YAHOO_SYMBOLS);
-      
-      // Fetch from Yahoo Finance in parallel (batch of 5)
-      const batchSize = 5;
-      for (let i = 0; i < Math.min(symbols.length, 10); i += batchSize) {
-        const batch = symbols.slice(i, i + batchSize);
-        const results = await Promise.allSettled(
-          batch.map(symbol => fetchYahooFinance(symbol))
-        );
-        
-        for (let j = 0; j < results.length; j++) {
-          const result = results[j];
-          const symbol = batch[j];
-          
-          if (result.status === "fulfilled" && result.value) {
-            yahooSuccess++;
-            const price = result.value.price || 0;
-            
-            if (!priceHistoryCache[symbol] || priceHistoryCache[symbol].length === 0) {
-              priceHistoryCache[symbol] = generatePriceHistory(price);
-            } else {
-              priceHistoryCache[symbol].shift();
-              priceHistoryCache[symbol].push(price);
-            }
-            
-            yahooResults.push({
-              symbol,
-              name: DISPLAY_NAMES[symbol] || symbol.replace("/USDT", ""),
-              price,
-              change24h: result.value.change24h || 0,
-              change24hPercent: result.value.change24hPercent || 0,
-              volume: result.value.volume || 0,
-              marketCap: 0, // Yahoo doesn't provide market cap easily
-              high24h: result.value.high24h || price,
-              low24h: result.value.low24h || price,
-              open: result.value.open || price,
-              previousClose: result.value.previousClose || price,
-              priceHistory: [...priceHistoryCache[symbol]],
-              lastUpdated: result.value.lastUpdated || Date.now(),
-              source: "yahoo",
-            });
-          }
-        }
-      }
-
-      // If Yahoo Finance worked for most pairs, use it
-      if (yahooSuccess >= symbols.length * 0.5) {
-        setData(yahooResults);
-        setDataSource("Yahoo Finance");
-        setLastFetch(Date.now());
-        setLoading(false);
-        return;
-      }
-
-      // Fallback to CoinGecko
-      console.log("Falling back to CoinGecko API...");
-      const coingeckoData = await fetchCoinGecko();
-      setData(coingeckoData);
-      setDataSource("CoinGecko");
-      setLastFetch(Date.now());
-      setLoading(false);
-    } catch (err) {
-      console.error("Failed to fetch market data:", err);
-      setError(err instanceof Error ? err.message : "Failed to fetch market data");
-      setLoading(false);
-      setDataSource("error");
-      
-      // Use fallback demo data if all APIs fail
-      if (data.length === 0) {
-        setData(getFallbackData());
-        setDataSource("demo (offline)");
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchMarketData();
-    
-    const interval = setInterval(fetchMarketData, refreshInterval);
-    
-    return () => clearInterval(interval);
-  }, [fetchMarketData, refreshInterval]);
-
-  const getPairData = useCallback((symbol: string) => {
-    return data.find(d => d.symbol === symbol);
-  }, [data]);
-
-  const refresh = useCallback(() => {
-    fetchMarketData();
-  }, [fetchMarketData]);
-
-  return {
-    data,
-    loading,
-    error,
-    lastFetch,
-    refresh,
-    getPairData,
-    dataSource,
-  };
-}
-
-// Fallback data when APIs are unavailable
+// Fallback demo data
 function getFallbackData(): MarketData[] {
   const pairs = [
     { symbol: "BTC/USDT", name: "Bitcoin", price: 67450.25 },
@@ -360,4 +248,106 @@ function getFallbackData(): MarketData[] {
     lastUpdated: Date.now(),
     source: "fallback" as const,
   }));
+}
+
+export function useMarketData(refreshInterval: number = 10000): UseMarketDataReturn {
+  const [data, setData] = useState<MarketData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [lastFetch, setLastFetch] = useState<number | null>(null);
+  const [dataSource, setDataSource] = useState<string>("initializing");
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const mountedRef = useRef(true);
+
+  const fetchMarketData = useCallback(async () => {
+    if (!mountedRef.current) return;
+    
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Try Bybit first
+      try {
+        const bybitData = await fetchBybitData();
+        if (bybitData.length > 0 && mountedRef.current) {
+          setData(bybitData);
+          setDataSource("Bybit");
+          setLastFetch(Date.now());
+          setLoading(false);
+          return;
+        }
+      } catch (bybitError) {
+        console.warn("Bybit failed, trying CoinGecko:", bybitError);
+      }
+
+      // Fallback to CoinGecko
+      try {
+        const coingeckoData = await fetchCoinGecko();
+        if (mountedRef.current) {
+          setData(coingeckoData);
+          setDataSource("CoinGecko");
+          setLastFetch(Date.now());
+          setLoading(false);
+          return;
+        }
+      } catch (coingeckoError) {
+        console.warn("CoinGecko failed:", coingeckoError);
+      }
+
+      // Use fallback if both fail
+      if (mountedRef.current) {
+        setData(getFallbackData());
+        setDataSource("Demo (offline)");
+        setLastFetch(Date.now());
+        setLoading(false);
+      }
+    } catch (err) {
+      console.error("Failed to fetch market data:", err);
+      if (mountedRef.current) {
+        setError(err instanceof Error ? err.message : "Failed to fetch market data");
+        setLoading(false);
+        
+        if (data.length === 0) {
+          setData(getFallbackData());
+          setDataSource("Demo (offline)");
+        }
+      }
+    }
+  }, []);
+
+  // Initial fetch and setup interval
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    // Initial fetch
+    fetchMarketData();
+    
+    // Setup auto-refresh interval
+    intervalRef.current = setInterval(fetchMarketData, refreshInterval);
+    
+    return () => {
+      mountedRef.current = false;
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, [fetchMarketData, refreshInterval]);
+
+  const getPairData = useCallback((symbol: string) => {
+    return data.find(d => d.symbol === symbol);
+  }, [data]);
+
+  const refresh = useCallback(() => {
+    fetchMarketData();
+  }, [fetchMarketData]);
+
+  return {
+    data,
+    loading,
+    error,
+    lastFetch,
+    refresh,
+    getPairData,
+    dataSource,
+  };
 }
