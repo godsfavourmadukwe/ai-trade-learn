@@ -13,6 +13,7 @@ import { MetricCard } from "@/components/dashboard/MetricCard";
 import { PerformanceChart } from "@/components/dashboard/PerformanceChart";
 import { PriceChart } from "@/components/dashboard/PriceChart";
 import { CandlestickChart } from "@/components/dashboard/CandlestickChart";
+import { LivePriceChart } from "@/components/dashboard/LivePriceChart";
 import { AIInsightsPanel } from "@/components/dashboard/AIInsightsPanel";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { SignalList } from "@/components/dashboard/SignalList";
@@ -373,12 +374,16 @@ export default function Dashboard() {
                           ))}
                         </div>
                       </div>
-                      <CandlestickChart
-                        candles={candlesFor(selectedPairData.symbol, selectedInterval)}
+                      <LivePriceChart
+                        candles={candlesFor(selectedPairData.symbol, selectedInterval).map((c) => ({ time: c.time, close: c.close, volume: c.volume }))}
                         symbol={selectedPairData.symbol}
-                        interval={selectedInterval}
-                        feedHealth={feedHealth}
+                        currentPrice={selectedPairData.price}
                         height={300}
+                        showVolume={true}
+                        showLabels={true}
+                        showGrid={true}
+                        showGradient={true}
+                        color="violet"
                       />
                     </div>
                   </div>
@@ -418,17 +423,16 @@ export default function Dashboard() {
                     </div>
                     
                     <div className="mb-4">
-                      <PriceChart
-                        data={
-                          candlesFor(pair.symbol, selectedInterval)
-                            .map((c) => c.close)
-                            .slice(-60)
-                        }
+                      <LivePriceChart
+                        candles={candlesFor(pair.symbol, selectedInterval).slice(-60).map((c) => ({ time: c.time, close: c.close, volume: c.volume }))}
+                        symbol={pair.symbol}
                         currentPrice={pair.price}
                         height={60}
-                        showGrid={false}
+                        showVolume={false}
                         showLabels={false}
+                        showGrid={false}
                         showGradient={true}
+                        color="violet"
                       />
                     </div>
                     
@@ -774,7 +778,7 @@ export default function Dashboard() {
           <TabsContent value="signals" className="space-y-6">
             <div className="grid lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2">
-                <SignalList signals={demoSignals} />
+                <SignalList signals={aiSignals} />
               </div>
               <div className="space-y-4">
                 <Card className="bg-[#111118] border-white/[0.08]">

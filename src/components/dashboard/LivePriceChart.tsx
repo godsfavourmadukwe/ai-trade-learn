@@ -1,14 +1,19 @@
-import { useEffect, useRef, useCallback, memo } from "react";
+import { useEffect, useRef, memo } from "react";
 import { cn } from "@/lib/utils";
 
 interface LivePriceChartProps {
-  currentPrice: number;
+  /** Historical candles driving the chart; replaced on every engine emission. */
+  candles: { time: number; close: number; volume: number }[];
   symbol: string;
-  priceHistory?: number[];
-  height?: number;
   color?: "green" | "red" | "blue" | "violet";
+  height?: number;
   className?: string;
   showVolume?: boolean;
+  showLabels?: boolean;
+  showGrid?: boolean;
+  showGradient?: boolean;
+  currentPrice?: number;
+  previousPrice?: number;
 }
 
 interface PricePoint {
@@ -27,7 +32,11 @@ function drawChart(
   canvas: HTMLCanvasElement,
   data: PricePoint[],
   currentPrice: number,
+  color: "green" | "red" | "blue" | "violet",
   showVolume: boolean,
+  showLabels: boolean,
+  showGrid: boolean,
+  showGradient: boolean,
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx || data.length < 2) return;
@@ -55,40 +64,46 @@ function drawChart(
   const chartHeight = height - padding.top - padding.bottom;
 
   // Draw grid
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.03)";
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 6; i++) {
-    const y = padding.top + (chartHeight / 6) * i;
-    ctx.beginPath();
-    ctx.moveTo(padding.left, y);
-    ctx.lineTo(width - padding.right, y);
-    ctx.stroke();
+  if (showGrid) {
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.03)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 6; i++) {
+      const y = padding.top + (chartHeight / 6) * i;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(width - padding.right, y);
+      ctx.stroke();
+    }
   }
 
   // Time labels
-  ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
-  ctx.font = "10px -apple-system, BlinkMacSystemFont, sans-serif";
-  ctx.textAlign = "center";
-  const timeLabels = ["-5m", "-4m", "-3m", "-2m", "-1m", "Now"];
-  timeLabels.forEach((label, i) => {
-    const x = padding.left + (chartWidth / (timeLabels.length - 1)) * i;
-    ctx.fillText(label, x, height - 25);
-  });
+  if (showLabels) {
+    ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
+    ctx.font = "10px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.textAlign = "center";
+    const timeLabels = ["-5m", "-4m", "-3m", "-2m", "-1m", "Now"];
+    timeLabels.forEach((label, i) => {
+      const x = padding.left + (chartWidth / (timeLabels.length - 1)) * i;
+      ctx.fillText(label, x, height - 25);
+    });
+  }
 
   // Price labels
-  ctx.textAlign = "right";
-  for (let i = 0; i <= 6; i++) {
-    const y = padding.top + (chartHeight / 6) * i;
-    const price = maxPrice + pricePadding - ((priceRange + pricePadding * 2) / 6) * i;
-    let label: string;
-    if (price >= 1000) {
-      label = `$${price.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-    } else if (price >= 1) {
-      label = `$${price.toFixed(2)}`;
-    } else {
-      label = `$${price.toFixed(4)}`;
+  if (showLabels) {
+    ctx.textAlign = "right";
+    for (let i = 0; i <= 6; i++) {
+      const y = padding.top + (chartHeight / 6) * i;
+      const price = maxPrice + pricePadding - ((priceRange + pricePadding * 2) / 6) * i;
+      let label: string;
+      if (price >= 1000) {
+        label = `$${price.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+      } else if (price >= 1) {
+        label = `$${price.toFixed(2)}`;
+      } else {
+        label = `$${price.toFixed(4)}`;
+      }
+      ctx.fillText(label, width - 10, y + 3);
     }
-    ctx.fillText(label, width - 10, y + 3);
   }
 
   // Calculate points
@@ -99,28 +114,30 @@ function drawChart(
 
   // Determine color based on price direction
   const isPositive = data[data.length - 1].price >= data[0].price;
-  const lineColor = isPositive ? COLORS.green : COLORS.red;
+  const lineColor = COLORS[color];
 
   // Draw gradient fill
-  const gradient = ctx.createLinearGradient(0, padding.top, 0, height - padding.bottom);
-  gradient.addColorStop(0, lineColor.fill);
-  gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+  if (showGradient) {
+    const gradient = ctx.createLinearGradient(0, padding.top, 0, height - padding.bottom);
+    gradient.addColorStop(0, lineColor.fill);
+    gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
 
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, height - padding.bottom);
-  for (let i = 0; i < points.length; i++) {
-    if (i === 0) {
-      ctx.lineTo(points[i].x, points[i].y);
-    } else {
-      const prevPoint = points[i - 1];
-      const cpx = (prevPoint.x + points[i].x) / 2;
-      ctx.bezierCurveTo(cpx, prevPoint.y, cpx, points[i].y, points[i].x, points[i].y);
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, height - padding.bottom);
+    for (let i = 0; i < points.length; i++) {
+      if (i === 0) {
+        ctx.lineTo(points[i].x, points[i].y);
+      } else {
+        const prevPoint = points[i - 1];
+        const cpx = (prevPoint.x + points[i].x) / 2;
+        ctx.bezierCurveTo(cpx, prevPoint.y, cpx, points[i].y, points[i].x, points[i].y);
+      }
     }
+    ctx.lineTo(points[points.length - 1].x, height - padding.bottom);
+    ctx.closePath();
+    ctx.fillStyle = gradient;
+    ctx.fill();
   }
-  ctx.lineTo(points[points.length - 1].x, height - padding.bottom);
-  ctx.closePath();
-  ctx.fillStyle = gradient;
-  ctx.fill();
 
   // Draw line
   ctx.strokeStyle = lineColor.line;
@@ -204,93 +221,56 @@ function drawChart(
 }
 
 function LivePriceChartInner({
-  currentPrice,
+  candles,
   symbol,
-  priceHistory = [],
+  color = "green",
   height = 300,
   className,
   showVolume = true,
+  showLabels = true,
+  showGrid = true,
+  showGradient = true,
+  currentPrice,
+  previousPrice,
 }: LivePriceChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const priceDataRef = useRef<PricePoint[]>([]);
-  const prevPriceRef = useRef<number>(0);
   const animRef = useRef<number>(0);
 
-  // Build initial data from real price history when it arrives
+  // Rebuild price series from candles whenever they change.
+  // This is driven by the engine snapshot, so it updates exactly when the
+  // market produces new data — no polling timer, no stale priceHistory prop.
   useEffect(() => {
-    if (priceHistory.length === 0) return;
-
-    // Only rebuild if we don't have data yet or symbol changed
-    if (priceDataRef.current.length === 0 || prevPriceRef.current === 0) {
-      const points: PricePoint[] = priceHistory.map((p, i) => ({
-        time: Date.now() - (priceHistory.length - i) * 5000,
-        price: p,
-      }));
-      priceDataRef.current = points;
-      prevPriceRef.current = currentPrice;
+    if (candles.length === 0) {
+      priceDataRef.current = [];
+      return;
     }
-  }, [priceHistory, currentPrice]);
-
-  // Append new price point when currentPrice changes
-  useEffect(() => {
-    if (currentPrice <= 0) return;
-    if (currentPrice === prevPriceRef.current) return;
-
-    const history = priceDataRef.current;
-
-    // If we have no history yet, seed from currentPrice
-    if (history.length === 0) {
-      for (let i = 0; i < 60; i++) {
-        history.push({
-          time: Date.now() - (60 - i) * 5000,
-          price: currentPrice,
-        });
+    const pts: PricePoint[] = candles.map((c) => ({ time: c.time, price: c.close }));
+    // If currentPrice is supplied, anchor the live endpoint to it.
+    if (Number.isFinite(currentPrice) && currentPrice > 0) {
+      const last = pts[pts.length - 1];
+      if (!last || last.price !== currentPrice) {
+        pts.push({ time: Date.now(), price: currentPrice });
       }
     }
+    priceDataRef.current = pts;
+  }, [candles, currentPrice]);
 
-    history.push({ time: Date.now(), price: currentPrice });
-
-    // Keep last 120 points (~10 minutes at 5s intervals)
-    if (history.length > 120) {
-      history.shift();
-    }
-
-    prevPriceRef.current = currentPrice;
-  }, [currentPrice]);
-
-  // Render loop - independent of React renders
+  // Render loop — one draw pass per new candle (no polling).
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || priceDataRef.current.length < 2) return;
 
-    let running = true;
-    let lastDraw = 0;
-    const fps = 30;
-    const interval = 1000 / fps;
+    const displayPrice = currentPrice && Number.isFinite(currentPrice) && currentPrice > 0
+      ? currentPrice
+      : priceDataRef.current[priceDataRef.current.length - 1].price;
+    drawChart(canvas, priceDataRef.current, displayPrice, color, showVolume, showLabels, showGrid, showGradient);
+  }, [candles, currentPrice]);
 
-    const loop = (ts: number) => {
-      if (!running) return;
-      if (ts - lastDraw < interval) {
-        animRef.current = requestAnimationFrame(loop);
-        return;
-      }
-      lastDraw = ts;
-
-      const data = priceDataRef.current;
-      if (data.length >= 2) {
-        drawChart(canvas, data, currentPrice, showVolume);
-      }
-
-      animRef.current = requestAnimationFrame(loop);
-    };
-
-    animRef.current = requestAnimationFrame(loop);
-
-    return () => {
-      running = false;
-      cancelAnimationFrame(animRef.current);
-    };
-  }, [currentPrice, showVolume]);
+  const derivedPrice =
+    currentPrice && Number.isFinite(currentPrice) && currentPrice > 0
+      ? currentPrice
+      : priceDataRef.current[priceDataRef.current.length - 1]?.price ?? 0;
 
   return (
     <div className={cn("relative", className)}>
@@ -307,6 +287,11 @@ function LivePriceChartInner({
           <span className="text-xs text-emerald-400">● Live</span>
         </div>
       </div>
+      {derivedPrice > 0 && (
+        <div className="absolute top-2 left-2 text-sm font-bold text-white bg-black/50 px-2 py-1 rounded">
+          ${derivedPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </div>
+      )}
     </div>
   );
 }

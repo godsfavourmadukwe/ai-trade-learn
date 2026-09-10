@@ -1,23 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "./StatusBadge";
-
-interface Signal {
-  id: string;
-  timestamp: number;
-  type: string;
-  price: number;
-  regime: string;
-  indicators: {
-    rsi: number;
-    atr: number;
-    ema50: number;
-    ema200: number;
-  };
-}
-
-interface SignalListProps {
-  signals: Signal[];
-}
+import type { TradingSignal } from "@/lib/ai-engine";
 
 function formatTimestamp(ts: number) {
   return new Date(ts).toLocaleString("en-US", {
@@ -36,7 +19,7 @@ function formatPrice(price: number) {
   }).format(price);
 }
 
-export function SignalList({ signals }: SignalListProps) {
+export function SignalList({ signals }: { signals: TradingSignal[] }) {
   return (
     <Card className="bg-[#111118] border-white/[0.05]">
       <CardHeader className="pb-3">
@@ -59,15 +42,17 @@ export function SignalList({ signals }: SignalListProps) {
                   <div className="flex items-center gap-2">
                     <span
                       className={`text-xs font-medium px-2 py-0.5 rounded ${
-                        signal.type === "long_entry"
+                        signal.action === "buy"
                           ? "bg-emerald-500/10 text-emerald-400"
-                          : "bg-red-500/10 text-red-400"
+                          : signal.action === "sell"
+                            ? "bg-red-500/10 text-red-400"
+                            : "bg-zinc-500/10 text-zinc-400"
                       }`}
                     >
-                      {signal.type === "long_entry" ? "LONG" : "SHORT"}
+                      {signal.action === "buy" ? "LONG" : signal.action === "sell" ? "SHORT" : "HOLD"}
                     </span>
                     <span className="text-sm text-white font-medium">
-                      {formatPrice(signal.price)}
+                      {formatPrice(signal.entryPrice)}
                     </span>
                   </div>
                   <span className="text-xs text-zinc-500">
@@ -89,7 +74,7 @@ export function SignalList({ signals }: SignalListProps) {
                   </div>
                   <div>
                     <span className="text-zinc-500">Regime</span>
-                    <span className="ml-1 text-zinc-300 capitalize">{signal.regime}</span>
+                    <span className="ml-1 text-zinc-300 capitalize">{signal.regime.replace(/_/g, " ")}</span>
                   </div>
                 </div>
               </div>
@@ -97,7 +82,7 @@ export function SignalList({ signals }: SignalListProps) {
           </div>
         ) : (
           <div className="text-center py-8 text-sm text-zinc-500">
-            No signals yet. Start backtesting or paper trading.
+            No signals yet. Start analyzing markets.
           </div>
         )}
       </CardContent>
