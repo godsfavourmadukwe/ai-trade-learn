@@ -103,11 +103,14 @@ export default function Dashboard() {
     latestSignal, 
     isAnalyzing, 
     learningMetrics, 
+    patternPerformance,
+    regime,
     analyzeSymbol, 
+    feedPrice,
     recordOutcome, 
     getPatternWeights, 
     resetLearning 
-  } = useAISignals(60000);
+  } = useAISignals();
   
   const [equityData, setEquityData] = useState<number[]>([]);
   const [drawdownData, setDrawdownData] = useState<number[]>([]);
@@ -151,12 +154,17 @@ export default function Dashboard() {
 
   const selectedPairData = marketData.find(p => p.symbol === selectedPair);
 
-  // Analyze selected pair when price updates
+  // Feed real prices into AI engine and analyze when price changes
   useEffect(() => {
     if (selectedPairData) {
+      // Feed all pairs into the engine for historical context
+      for (const pair of marketData) {
+        feedPrice(pair.symbol, pair.price, pair.volume);
+      }
+      // Analyze the selected pair
       analyzeSymbol(selectedPairData.symbol, selectedPairData.price);
     }
-  }, [selectedPairData?.price]);
+  }, [selectedPairData?.price, marketData, feedPrice, analyzeSymbol]);
 
   const formatPrice = (price: number) => {
     if (price < 1) return `$${price.toFixed(4)}`;
@@ -543,6 +551,8 @@ export default function Dashboard() {
                 onAnalyze={() => selectedPairData && analyzeSymbol(selectedPairData.symbol, selectedPairData.price)}
                 onResetLearning={resetLearning}
                 patternWeights={getPatternWeights()}
+                patternPerformance={patternPerformance}
+                regime={regime}
               />
             </div>
 

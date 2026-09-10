@@ -1,104 +1,64 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { aiEngine, type TradingSignal, type LearningMetrics } from "@/lib/ai-engine";
-
-interface PriceData {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+import { aiEngine, type TradingSignal, type LearningMetrics, type PatternPerformance, type MarketRegime } from "@/lib/ai-engine";
 
 interface UseAISignalsReturn {
   signals: TradingSignal[];
   latestSignal: TradingSignal | null;
   isAnalyzing: boolean;
   learningMetrics: LearningMetrics;
+  patternPerformance: PatternPerformance[];
+  regime: MarketRegime;
   analyzeSymbol: (symbol: string, currentPrice: number) => TradingSignal;
+  feedPrice: (symbol: string, price: number, volume?: number) => void;
   recordOutcome: (signalId: string, outcome: "win" | "loss", pnl: number) => void;
   getPatternWeights: () => Record<string, number>;
   resetLearning: () => void;
 }
 
-// Generate simulated OHLCV data from current price
-function generateOHLCV(currentPrice: number, points: number = 100): PriceData[] {
-  const data: PriceData[] = [];
-  let price = currentPrice * 0.97;
-  
-  for (let i = 0; i < points; i++) {
-    const volatility = 0.02;
-    const change = (Math.random() - 0.48) * price * volatility;
-    const open = price;
-    const close = price + change;
-    const high = Math.max(open, close) + Math.random() * price * 0.01;
-    const low = Math.min(open, close) - Math.random() * price * 0.01;
-    const volume = Math.random() * 10000000 + 1000000;
-    
-    data.push({
-      time: Date.now() - (points - i) * 60000,
-      open,
-      high,
-      low,
-      close,
-      volume,
-    });
-    
-    price = close;
-  }
-  
-  // Ensure last point is close to current price
-  if (data.length > 0) {
-    data[data.length - 1].close = currentPrice;
-    data[data.length - 1].high = Math.max(data[data.length - 1].high, currentPrice);
-    data[data.length - 1].low = Math.min(data[data.length - 1].low, currentPrice);
-  }
-  
-  return data;
-}
-
-export function useAISignals(refreshInterval: number = 60000): UseAISignalsReturn {
+export function useAISignals(): UseAISignalsReturn {
   const [signals, setSignals] = useState<TradingSignal[]>([]);
   const [latestSignal, setLatestSignal] = useState<TradingSignal | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [learningMetrics, setLearningMetrics] = useState<LearningMetrics>(
-    aiEngine.getMetrics()
-  );
-  
+  const [learningMetrics, setLearningMetrics] = useState<LearningMetrics>(aiEngine.getMetrics());
+  const [patternPerformance, setPatternPerformance] = useState<PatternPerformance[]>(aiEngine.getPatternPerformance());
+  const [regime, setRegime] = useState<MarketRegime>(aiEngine.getRegime());
+
   const lastPriceRef = useRef<Record<string, number>>({});
   const signalHistoryRef = useRef<Map<string, TradingSignal>>(new Map());
+  const evalIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const decayIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const metricsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Feed real price data into the engine
+  const feedPrice = useCallback((symbol: string, price: number, volume?: number) => {
+    if (price <= 0) return;
+    aiEngine.updatePrice(symbol, price, volume);
+  }, []);
 
   // Analyze a symbol and generate signal
-  const analyzeSymbol = useCallback((symbol: string, currentPrice: number): TradingSignal => {
+  const analyzeSymbol = useCallback((symbol: string, _currentPrice: number): TradingSignal => {
     setIsAnalyzing(true);
-    
-    // Generate price data
-    const priceData = generateOHLCV(currentPrice);
-    
-    // Run AI analysis
-    const signal = aiEngine.analyzeMarket(symbol, priceData);
-    
+
+    // Generate signal from real price data
+    const signal = aiEngine.analyzeMarket(symbol);
+
     // Store signal
     signalHistoryRef.current.set(signal.id, signal);
-    
+
     // Update state
     setLatestSignal(signal);
-    setSignals(prev => {
-      const newSignals = [signal, ...prev].slice(0, 50); // Keep last 50 signals
-      return newSignals;
-    });
-    
+    setSignals((prev) => [signal, ...prev].slice(0, 50));
+
     setIsAnalyzing(false);
-    
     return signal;
   }, []);
 
-  // Record trade outcome for learning
+  // Record trade outcome for manual learning
   const recordOutcome = useCallback((signalId: string, outcome: "win" | "loss", pnl: number) => {
     const signal = signalHistoryRef.current.get(signalId);
     if (signal) {
       aiEngine.learnFromOutcome(signal, outcome, pnl);
-      setLearningMetrics(aiEngine.getMetrics());
+      refreshMetrics();
     }
   }, []);
 
@@ -110,41 +70,63 @@ export function useAISignals(refreshInterval: number = 60000): UseAISignalsRetur
   // Reset learning
   const resetLearning = useCallback(() => {
     aiEngine.reset();
-    setLearningMetrics(aiEngine.getMetrics());
     setSignals([]);
     setLatestSignal(null);
     signalHistoryRef.current.clear();
+    refreshMetrics();
   }, []);
 
-  // Auto-analyze when prices change
-  const onPriceUpdate = useCallback((symbol: string, price: number) => {
-    const lastPrice = lastPriceRef.current[symbol];
-    
-    // Only analyze if price changed significantly (>0.1%)
-    if (!lastPrice || Math.abs(price - lastPrice) / lastPrice > 0.001) {
-      lastPriceRef.current[symbol] = price;
-      analyzeSymbol(symbol, price);
-    }
-  }, [analyzeSymbol]);
+  // Refresh all metrics from engine
+  const refreshMetrics = useCallback(() => {
+    setLearningMetrics(aiEngine.getMetrics());
+    setPatternPerformance(aiEngine.getPatternPerformance());
+    setRegime(aiEngine.getRegime());
+  }, []);
 
-  // Update learning metrics periodically
+  // ---- Autonomous Learning Loop ----
+
+  // 1. Auto-evaluate pending signals every 30 seconds
   useEffect(() => {
-    const interval = setInterval(() => {
-      setLearningMetrics(aiEngine.getMetrics());
-    }, 5000);
-    
-    return () => clearInterval(interval);
+    evalIntervalRef.current = setInterval(() => {
+      aiEngine.evaluatePendingSignals();
+      refreshMetrics();
+    }, 30000);
+
+    return () => {
+      if (evalIntervalRef.current) clearInterval(evalIntervalRef.current);
+    };
+  }, [refreshMetrics]);
+
+  // 2. Weight decay every 5 minutes
+  useEffect(() => {
+    decayIntervalRef.current = setInterval(() => {
+      aiEngine.decayWeights();
+    }, 5 * 60 * 1000);
+
+    return () => {
+      if (decayIntervalRef.current) clearInterval(decayIntervalRef.current);
+    };
   }, []);
+
+  // 3. Refresh UI metrics every 5 seconds
+  useEffect(() => {
+    metricsIntervalRef.current = setInterval(refreshMetrics, 5000);
+    return () => {
+      if (metricsIntervalRef.current) clearInterval(metricsIntervalRef.current);
+    };
+  }, [refreshMetrics]);
 
   return {
     signals,
     latestSignal,
     isAnalyzing,
     learningMetrics,
+    patternPerformance,
+    regime,
     analyzeSymbol,
+    feedPrice,
     recordOutcome,
     getPatternWeights,
     resetLearning,
-    onPriceUpdate,
-  } as UseAISignalsReturn;
+  };
 }
