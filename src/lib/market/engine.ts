@@ -32,6 +32,11 @@ const BACKFILL_LIMIT = 60;
 const REST_POLL_INTERVAL_MS = 15_000;
 const REST_POLL_MAX_PAIRS_PER_CYCLE = 2; // rate limit: max 2 pairs per REST poll cycle
 
+// Public market-data endpoint (same data as api.binance.com, no geo-block).
+// api.binance.com is only tried as a fallback for regions where vision is unavailable.
+const BINANCE_REST_PRIMARY = "https://data-api.binance.vision";
+const BINANCE_REST_FALLBACK = "https://api.binance.com";
+
 export interface SymbolSnapshot {
   symbol: string;
   price: number;
@@ -110,6 +115,7 @@ export class MarketEngine {
   private pollPairIndex = 0; // round-robin index for rate-limited REST polling
   private lastServerDataTime = 0; // when Convex proxy last delivered data
   private serverDataActive = false; // true once Convex proxy delivers first data
+  private restPollBase = BINANCE_REST_PRIMARY; // flipped to fallback if primary 4xx/5xx
 
   constructor() {
     this.binance = new BinanceProvider();
@@ -191,7 +197,9 @@ export class MarketEngine {
       void source;
     };
     this.failover.subscribeSymbols(EXCHANGE_SYMBOLS, intervals);
-    this.failover.connect();
+    // Connect the primary only; the secondary stays cold until we know the
+    // primary can't deliver data (see warmSecondaryIfPrimaryUnhealthy).
+    this.failover.connectPrimary();
     // Emit initial empty state so UI shows loading, not stale data
     this.allDirty = true;
     this.scheduleEmit();
@@ -203,6 +211,20 @@ export class MarketEngine {
     setTimeout(() => {
       this.pollTimer = setInterval(() => this.restPoll(), REST_POLL_INTERVAL_MS);
     }, 5000); // 5s grace period for WS to connect
+    // If the primary WS hasn't produced data, warm the secondary provider.
+    setTimeout(() => this.warmSecondaryIfPrimaryUnhealthy(), 15_000);
+  }
+
+  private warmSecondaryIfPrimaryUnhealthy(): void {
+    if (!this.connected) return;
+    const primaryLive =
+      this.diag.realtimeUpdatesReceived > 0 &&
+      Date.now() - this.lastServerDataTime < 30_000 ||
+      this.binance.isLive();
+    if (!primaryLive) {
+      console.debug("[engine] primary unhealthy — warming Bybit secondary");
+      this.failover.connectSecondary();
+    }
   }
 
   disconnect(): void {
@@ -327,9 +349,16 @@ export class MarketEngine {
 
     console.debug(`[engine] REST poll fallback for ${pairsToPoll.join(", ")}`);
 
-    // Fetch 24h ticker (single request for all symbols)
+    // Fetch 24h ticker for our symbols only (small, fast payload).
+    // Use the public market-data endpoint — api.binance.com is geo-blocked in
+    // several regions (HTTP 451) and returns an HTML CloudFront error page.
     try {
-      const res = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+      const symbolsParam = encodeURIComponent(JSON.stringify(EXCHANGE_SYMBOLS));
+      let res = await fetch(`${this.restPollBase}/api/v3/ticker/24hr?symbols=${symbolsParam}`);
+      if (!res.ok && this.restPollBase === BINANCE_REST_PRIMARY) {
+        this.restPollBase = BINANCE_REST_FALLBACK;
+        res = await fetch(`${this.restPollBase}/api/v3/ticker/24hr?symbols=${symbolsParam}`);
+      }
       if (res.ok) {
         const tickers = (await res.json()) as Array<{
           symbol: string; lastPrice: string; priceChangePercent: string;
@@ -363,7 +392,7 @@ export class MarketEngine {
     for (const exchangeSymbol of pairsToPoll) {
       try {
         const res = await fetch(
-          `https://api.binance.com/api/v3/klines?symbol=${exchangeSymbol}&interval=1m&limit=2`
+          `${this.restPollBase}/api/v3/klines?symbol=${exchangeSymbol}&interval=1m&limit=2`
         );
         if (!res.ok) continue;
         const rows = (await res.json()) as unknown[];

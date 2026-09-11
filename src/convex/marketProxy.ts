@@ -13,7 +13,17 @@ const INTERVAL_MAP: Record<string, string> = {
   "1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d",
 };
 
-const BINANCE_REST = "https://api.binance.com";
+// Public market-data endpoints — same data as api.binance.com but without
+// regional blocks (api.binance.com returns HTTP 451 in several regions).
+const BINANCE_REST_PRIMARY = "https://data-api.binance.vision";
+const BINANCE_REST_FALLBACK = "https://api.binance.com";
+
+async function binanceFetch(path: string): Promise<Response> {
+  const primary = await fetch(`${BINANCE_REST_PRIMARY}${path}`);
+  if (primary.ok) return primary;
+  // Retry once against api.binance.com for regions where vision is unavailable
+  return fetch(`${BINANCE_REST_FALLBACK}${path}`);
+}
 
 // ── Mutations (internal) ───────────────────────────────────
 
@@ -83,7 +93,10 @@ export const upsertCandle = internalMutation({
 export const fetchTickers = internalAction({
   handler: async (ctx) => {
     try {
-      const res = await fetch(`${BINANCE_REST}/api/v3/ticker/24hr`);
+      // Request only our symbols — the unfiltered endpoint returns ~2MB+ for
+      // every listing and is far slower.
+      const symbolsParam = encodeURIComponent(JSON.stringify(EXCHANGE_SYMBOLS));
+      const res = await binanceFetch(`/api/v3/ticker/24hr?symbols=${symbolsParam}`);
       if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
       const tickers = (await res.json()) as Array<{
         symbol: string;
@@ -132,8 +145,8 @@ export const fetchCandles = internalAction({
     const limit = args.limit ?? 100;
     const interval = INTERVAL_MAP[args.interval] ?? args.interval;
     try {
-      const res = await fetch(
-        `${BINANCE_REST}/api/v3/klines?symbol=${args.symbol}&interval=${interval}&limit=${limit}`
+      const res = await binanceFetch(
+        `/api/v3/klines?symbol=${args.symbol}&interval=${interval}&limit=${limit}`
       );
       if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
       const rows = (await res.json()) as unknown[][];

@@ -222,15 +222,18 @@ export abstract class BaseProvider implements MarketDataProvider {
 // Production WebSocket + REST endpoints
 // ------------------------------------------------------------
 
-// Multiple WS endpoints for failover
+// Public market-data endpoints (geo-restriction free):
+// data-stream.binance.vision / data-api.binance.vision serve the exact same
+// market data as binance.com but without regional blocks. api.binance.com is
+// kept only as a fallback for regions where it works.
 const BINANCE_WS_URLS = [
+  "wss://data-stream.binance.vision/stream",
   "wss://stream.binance.com:9443/stream",
-  "wss://stream.binance.com:9443/ws",
-  "wss://stream.binance.com:443/stream",
+  "wss://data-stream.binance.vision/ws",
 ];
 
-const BINANCE_REST_BASE = "https://api.binance.com";
-const BINANCE_REST_FALLBACK = "https://data-api.binance.vision";
+const BINANCE_REST_BASE = "https://data-api.binance.vision";
+const BINANCE_REST_FALLBACK = "https://api.binance.com";
 
 export class BinanceProvider extends BaseProvider {
   readonly name = "binance";
@@ -254,7 +257,8 @@ export class BinanceProvider extends BaseProvider {
     this.wsUrlIndex++;
     if (this.wsUrlIndex >= BINANCE_WS_URLS.length) {
       // All WS URLs exhausted — fall back to REST polling
-      this.restBase = BINANCE_REST_FALLBACK;
+      this.restBase =
+        this.restBase === BINANCE_REST_BASE ? BINANCE_REST_FALLBACK : BINANCE_REST_BASE;
       this.wsUrlIndex = 0;
     }
   }
@@ -264,6 +268,15 @@ export class BinanceProvider extends BaseProvider {
     this.sendSubscribe();
     // Sync server time in background (non-blocking)
     this.syncServerTime(`${this.restBase}/api/v3/time`);
+  }
+
+  /** True once the socket is open AND at least one market message arrived. */
+  isLive(): boolean {
+    return (
+      this.ws?.readyState === WebSocket.OPEN &&
+      Date.now() - this.lastMessageAt < 30_000 &&
+      this.diagnostics.streamHealth === "connected"
+    );
   }
 
   private sendSubscribe(): void {
@@ -575,7 +588,15 @@ export class ProviderFailover {
 
   connect(): void {
     this.primary.connect();
-    // keep secondary warm (cheap, public streams)
+    // The secondary starts cold; engine warms it on demand (connectSecondary)
+    // so we don't hold a second socket to a geo-blocked host by default.
+  }
+
+  connectPrimary(): void {
+    this.primary.connect();
+  }
+
+  connectSecondary(): void {
     this.secondary?.connect();
   }
 

@@ -46,12 +46,28 @@ interface UseMarketDataReturn {
 const DEFAULT_INTERVAL: Interval = "1m";
 
 // ── Browser-side REST fallback ─────────────────────────────
-// When the Convex proxy is slow or unavailable, fetch directly
-// from Binance REST API. This runs in the browser.
+// When the Convex proxy is slow or unavailable, fetch directly from Binance's
+// public market-data endpoint (api.binance.com is geo-blocked in some regions
+// with HTTP 451). Runs in the browser.
+
+const BROWSER_REST_PRIMARY = "https://data-api.binance.vision";
+const BROWSER_REST_FALLBACK = "https://api.binance.com";
+let browserRestBase = BROWSER_REST_PRIMARY;
+
+async function binanceFetch(path: string): Promise<Response> {
+  const primary = await fetch(`${browserRestBase}${path}`);
+  if (primary.ok) return primary;
+  if (browserRestBase === BROWSER_REST_PRIMARY) {
+    browserRestBase = BROWSER_REST_FALLBACK;
+    return fetch(`${browserRestBase}${path}`);
+  }
+  return primary;
+}
 
 async function browserFetchTickers(): Promise<void> {
   try {
-    const res = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+    const symbolsParam = encodeURIComponent(JSON.stringify(EXCHANGE_SYMBOLS));
+    const res = await binanceFetch(`/api/v3/ticker/24hr?symbols=${symbolsParam}`);
     if (!res.ok) return;
     const tickers = (await res.json()) as Array<{
       symbol: string;
@@ -85,8 +101,8 @@ async function browserFetchTickers(): Promise<void> {
 
 async function browserFetchCandles(symbol: string, interval: Interval, limit = 100): Promise<void> {
   try {
-    const res = await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+    const res = await binanceFetch(
+      `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
     );
     if (!res.ok) return;
     const rows = (await res.json()) as unknown[][];
