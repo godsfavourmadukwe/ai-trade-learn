@@ -9,6 +9,8 @@ import { useMarketData } from "@/hooks/use-market-data";
 import type { Interval } from "@/lib/market/types";
 import { ALL_INTERVALS } from "@/lib/market/types";
 import { useAISignals } from "@/hooks/use-ai-signals";
+import { useArena } from "@/hooks/use-arena";
+import { ArenaPanel } from "@/components/dashboard/ArenaPanel";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { PerformanceChart } from "@/components/dashboard/PerformanceChart";
 import { PriceChart } from "@/components/dashboard/PriceChart";
@@ -39,7 +41,8 @@ import {
   Globe,
   Star,
   Sparkles,
-  Clock
+  Clock,
+  Swords
 } from "lucide-react";
 
 // Demo data for visualization
@@ -112,8 +115,7 @@ export default function Dashboard() {
     selectedInterval,
     setInterval: setSelectedInterval,
     tickAgeMs,
-  } = useMarketData();
-  const { 
+  } = useMarketData();  const { 
     signals: aiSignals, 
     latestSignal, 
     isAnalyzing, 
@@ -121,11 +123,20 @@ export default function Dashboard() {
     patternPerformance,
     regime,
     analyzeSymbol, 
-    feedPrice,
+    feedPrice, 
     recordOutcome, 
     getPatternWeights, 
     resetLearning 
   } = useAISignals();
+  const {
+    trades: arenaTrades,
+    signals: arenaSignals,
+    performance: arenaPerformance,
+    status: arenaStatus,
+    isActive: arenaActive,
+    start: startArena,
+    stop: stopArena,
+  } = useArena();
   
   const [equityData, setEquityData] = useState<number[]>([]);
   const [drawdownData, setDrawdownData] = useState<number[]>([]);
@@ -268,6 +279,10 @@ export default function Dashboard() {
             <TabsTrigger value="signals" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500/30 data-[state=active]:to-orange-500/30 data-[state=active]:text-white font-semibold">
               <Sparkles className="w-4 h-4 mr-2" />
               AI Signals
+            </TabsTrigger>
+            <TabsTrigger value="arena" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500/30 data-[state=active]:to-red-500/30 data-[state=active]:text-white font-semibold">
+              <Swords className="w-4 h-4 mr-2" />
+              AI Arena
             </TabsTrigger>
             <TabsTrigger value="risk" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500/30 data-[state=active]:to-teal-500/30 data-[state=active]:text-white font-semibold">
               <Shield className="w-4 h-4 mr-2" />
@@ -848,6 +863,19 @@ export default function Dashboard() {
                 </Card>
               </div>
             </div>
+          </TabsContent>
+
+          {/* AI Trade Arena Tab */}
+          <TabsContent value="arena" className="space-y-6">
+            <ArenaPanel
+              trades={arenaTrades}
+              signals={arenaSignals}
+              performance={arenaPerformance}
+              status={arenaStatus}
+              isActive={arenaActive}
+              onStart={startArena}
+              onStop={stopArena}
+            />
           </TabsContent>
 
           {/* Risk Tab */}

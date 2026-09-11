@@ -62,15 +62,15 @@ export function SignalList({ signals }: { signals: TradingSignal[] }) {
                 <div className="grid grid-cols-4 gap-2 text-xs">
                   <div>
                     <span className="text-zinc-500">RSI</span>
-                    <span className="ml-1 text-zinc-300">{signal.indicators.rsi.toFixed(1)}</span>
+                    <span className="ml-1 text-zinc-300">{(signal.indicators as Record<string, number>).rsi?.toFixed(1) ?? "—"}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500">ATR</span>
-                    <span className="ml-1 text-zinc-300">{signal.indicators.atr.toFixed(2)}</span>
+                    <span className="ml-1 text-zinc-300">{(signal.indicators as Record<string, number>).atr?.toFixed(2) ?? "—"}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500">EMA50</span>
-                    <span className="ml-1 text-zinc-300">{signal.indicators.ema50.toFixed(0)}</span>
+                    <span className="ml-1 text-zinc-300">{(signal.indicators as Record<string, number>).ema50?.toFixed(0) ?? "—"}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500">Regime</span>

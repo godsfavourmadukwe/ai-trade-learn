@@ -39,6 +39,7 @@ const REGIME_LABELS: Record<MarketRegime, { label: string; color: string; icon: 
   strong_downtrend: { label: "Strong Downtrend", color: "text-rose-400", icon: TrendingDown },
   high_volatility: { label: "High Volatility", color: "text-amber-400", icon: AlertTriangle },
   low_volatility: { label: "Low Volatility", color: "text-zinc-300", icon: Equal },
+  unknown: { label: "Unknown", color: "text-zinc-400", icon: Equal },
 };
 
 export function AIInsightsPanel({
