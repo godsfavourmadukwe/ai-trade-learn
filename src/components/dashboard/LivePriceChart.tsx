@@ -20,6 +20,7 @@ interface LivePriceChartProps {
 interface PricePoint {
   time: number;
   price: number;
+  close?: number;
 }
 
 const COLORS = {
@@ -252,7 +253,8 @@ function LivePriceChartInner({
 
     const displayPrice = getDerivedPrice(candles, currentPrice ?? 0);
     const lastPoint = priceDataRef.current[priceDataRef.current.length - 1];
-    const finalDisplayPrice = displayPrice ?? lastPoint?.price ?? 0;
+    const lastPointPrice = lastPoint ? (lastPoint as PricePoint).price : undefined;
+    const finalDisplayPrice = displayPrice ?? lastPointPrice ?? 0;
     drawChart(canvas, priceDataRef.current, finalDisplayPrice, color, showVolume, showLabels, showGrid, showGradient);
   }, [candles, currentPrice]);
 
