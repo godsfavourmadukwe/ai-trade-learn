@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useQuery, useMutation, useAction } from "convex/react";
+import { useQuery, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { marketEngine, type EngineSnapshot, type EngineDiagnosticsDetail } from "@/lib/market/engine";
-import { PAIRS, displayName } from "@/lib/market/symbols";
+import { PAIRS, EXCHANGE_SYMBOLS, displayName } from "@/lib/market/symbols";
 import type { Candle, FeedHealth, Interval } from "@/lib/market/types";
 
 export type { Candle };
@@ -45,24 +45,87 @@ interface UseMarketDataReturn {
 
 const DEFAULT_INTERVAL: Interval = "1m";
 
+// ── Browser-side REST fallback ─────────────────────────────
+// When the Convex proxy is slow or unavailable, fetch directly
+// from Binance REST API. This runs in the browser.
+
+async function browserFetchTickers(): Promise<void> {
+  try {
+    const res = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+    if (!res.ok) return;
+    const tickers = (await res.json()) as Array<{
+      symbol: string;
+      lastPrice: string;
+      priceChangePercent: string;
+      highPrice: string;
+      lowPrice: string;
+      quoteVolume: string;
+      openPrice: string;
+    }>;
+    for (const t of tickers) {
+      if (!EXCHANGE_SYMBOLS.includes(t.symbol)) continue;
+      const price = parseFloat(t.lastPrice);
+      if (!Number.isFinite(price) || price <= 0) continue;
+      marketEngine.ingestServerTicker({
+        symbol: t.symbol,
+        price,
+        change24hPercent: parseFloat(t.priceChangePercent) || 0,
+        high24h: parseFloat(t.highPrice) || price,
+        low24h: parseFloat(t.lowPrice) || price,
+        volume24h: parseFloat(t.quoteVolume) || 0,
+        open24h: parseFloat(t.openPrice) || price,
+        lastUpdate: Date.now(),
+      });
+    }
+    marketEngine.markServerConnected();
+  } catch {
+    // Browser can't reach Binance — Convex proxy is the only way
+  }
+}
+
+async function browserFetchCandles(symbol: string, interval: Interval, limit = 100): Promise<void> {
+  try {
+    const res = await fetch(
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+    );
+    if (!res.ok) return;
+    const rows = (await res.json()) as unknown[][];
+    if (!Array.isArray(rows)) return;
+    const candles = rows
+      .filter((r) => Array.isArray(r) && r.length >= 6)
+      .map((r) => ({
+        time: Number(r[0]),
+        open: Number(r[1]),
+        high: Number(r[2]),
+        low: Number(r[3]),
+        close: Number(r[4]),
+        volume: Number(r[5]),
+        closed: true,
+      }))
+      .filter((c) => c.time > 0 && c.open > 0 && c.close > 0 && c.high >= c.low);
+    if (candles.length > 0) {
+      marketEngine.ingestServerCandles(symbol, interval, candles);
+    }
+  } catch {
+    // Browser can't reach Binance
+  }
+}
+
 export function useMarketData(): UseMarketDataReturn {
   const [snapshot, setSnapshot] = useState<EngineSnapshot | null>(null);
   const [selectedInterval, setSelectedInterval] = useState<Interval>(DEFAULT_INTERVAL);
   const [tickAgeMs, setTickAgeMs] = useState(0);
   const mountedRef = useRef(true);
+  const [selectedSymbol, setSelectedSymbol] = useState("BTCUSDT");
 
   // ── Convex server-side data subscriptions ──
   const convexTickers = useQuery(api.marketProxy.getTickers);
-  const convexCandlesBtc = useQuery(api.marketProxy.getCandles, { symbol: "BTCUSDT", interval: selectedInterval });
-  const convexCandlesEth = useQuery(api.marketProxy.getCandles, { symbol: "ETHUSDT", interval: selectedInterval });
-  const convexCandlesSol = useQuery(api.marketProxy.getCandles, { symbol: "SOLUSDT", interval: selectedInterval });
-  const convexCandlesBnb = useQuery(api.marketProxy.getCandles, { symbol: "BNBUSDT", interval: selectedInterval });
-  const convexCandlesXrp = useQuery(api.marketProxy.getCandles, { symbol: "XRPUSDT", interval: selectedInterval });
-  const convexCandlesAda = useQuery(api.marketProxy.getCandles, { symbol: "ADAUSDT", interval: selectedInterval });
-  const convexCandlesDoge = useQuery(api.marketProxy.getCandles, { symbol: "DOGEUSDT", interval: selectedInterval });
-  const convexCandlesAvax = useQuery(api.marketProxy.getCandles, { symbol: "AVAXUSDT", interval: selectedInterval });
-  const convexCandlesDot = useQuery(api.marketProxy.getCandles, { symbol: "DOTUSDT", interval: selectedInterval });
-  const convexCandlesLink = useQuery(api.marketProxy.getCandles, { symbol: "LINKUSDT", interval: selectedInterval });
+
+  // Only fetch candles for the currently selected symbol (not all 10)
+  const convexCandles = useQuery(api.marketProxy.getCandles, {
+    symbol: selectedSymbol,
+    interval: selectedInterval,
+  });
 
   const startPolling = useAction(api.marketProxy.startPolling);
   const pollingStartedRef = useRef(false);
@@ -71,16 +134,17 @@ export function useMarketData(): UseMarketDataReturn {
   useEffect(() => {
     if (pollingStartedRef.current) return;
     pollingStartedRef.current = true;
-    // Fire-and-forget: start the server-side polling loop
     startPolling().catch((e) => console.warn("[market] startPolling failed:", e));
   }, [startPolling]);
 
-  // ── Connect the engine once per app lifetime; subscribe to snapshots ──
+  // ── Connect the engine once; subscribe to snapshots ──
   useEffect(() => {
     mountedRef.current = true;
     const unsubscribe = marketEngine.subscribe((snap) => {
       if (mountedRef.current) setSnapshot(snap);
     });
+    // Start engine (WebSocket connections + finalization timer)
+    // Don't pass intervals to connect — we'll use server proxy for data
     marketEngine.connect([DEFAULT_INTERVAL]);
     return () => {
       mountedRef.current = false;
@@ -90,7 +154,11 @@ export function useMarketData(): UseMarketDataReturn {
 
   // ── Feed Convex ticker data into engine ──
   useEffect(() => {
-    if (!convexTickers || convexTickers.length === 0) return;
+    if (!convexTickers || convexTickers.length === 0) {
+      // Convex data not ready yet — try browser-side fallback
+      browserFetchTickers();
+      return;
+    }
     for (const t of convexTickers) {
       marketEngine.ingestServerTicker({
         symbol: t.symbol,
@@ -107,43 +175,59 @@ export function useMarketData(): UseMarketDataReturn {
   }, [convexTickers]);
 
   // ── Feed Convex candle data into engine ──
-  const candleMap: Record<string, typeof convexCandlesBtc> = useMemo(() => ({
-    BTCUSDT: convexCandlesBtc,
-    ETHUSDT: convexCandlesEth,
-    SOLUSDT: convexCandlesSol,
-    BNBUSDT: convexCandlesBnb,
-    XRPUSDT: convexCandlesXrp,
-    ADAUSDT: convexCandlesAda,
-    DOGEUSDT: convexCandlesDoge,
-    AVAXUSDT: convexCandlesAvax,
-    DOTUSDT: convexCandlesDot,
-    LINKUSDT: convexCandlesLink,
-  }), [convexCandlesBtc, convexCandlesEth, convexCandlesSol, convexCandlesBnb, convexCandlesXrp, convexCandlesAda, convexCandlesDoge, convexCandlesAvax, convexCandlesDot, convexCandlesLink]);
+  const candleFeedKey = useMemo(() => {
+    if (!convexCandles || convexCandles.length === 0) return "";
+    const last = convexCandles[convexCandles.length - 1];
+    return `${selectedSymbol}|${selectedInterval}|${convexCandles.length}|${last?.time}`;
+  }, [convexCandles, selectedSymbol, selectedInterval]);
 
-  // Feed candles into engine for each symbol
-  const fedCandlesRef = useRef(new Set<string>());
+  const fedKeyRef = useRef("");
   useEffect(() => {
-    for (const symbol of Object.keys(candleMap)) {
-      const candles = candleMap[symbol];
-      if (!candles || candles.length === 0) continue;
-      const feedKey = `${symbol}|${selectedInterval}|${candles.length}|${candles[candles.length - 1]?.time}`;
-      if (fedCandlesRef.current.has(feedKey)) continue;
-      fedCandlesRef.current.add(feedKey);
-      marketEngine.ingestServerCandles(
-        symbol,
-        selectedInterval,
-        candles.map((c) => ({
-          time: c.time as number,
-          open: c.open as number,
-          high: c.high as number,
-          low: c.low as number,
-          close: c.close as number,
-          volume: c.volume as number,
-          closed: c.closed as boolean,
-        })),
-      );
+    if (!candleFeedKey || candleFeedKey === fedKeyRef.current) return;
+    if (!convexCandles || convexCandles.length === 0) {
+      // Convex candles not ready — try browser-side fallback
+      browserFetchCandles(selectedSymbol, selectedInterval);
+      return;
     }
-  }, [candleMap, selectedInterval]);
+    fedKeyRef.current = candleFeedKey;
+    marketEngine.ingestServerCandles(
+      selectedSymbol,
+      selectedInterval,
+      convexCandles.map((c) => ({
+        time: c.time as number,
+        open: c.open as number,
+        high: c.high as number,
+        low: c.low as number,
+        close: c.close as number,
+        volume: c.volume as number,
+        closed: c.closed as boolean,
+      })),
+    );
+  }, [candleFeedKey, convexCandles, selectedSymbol, selectedInterval]);
+
+  // ── Also try browser-side candle fetch for initial load ──
+  useEffect(() => {
+    // Give Convex 3 seconds, then fall back to browser-side fetch
+    const timer = setTimeout(() => {
+      const candles = marketEngine.getCandles(selectedSymbol, selectedInterval);
+      if (candles.length === 0) {
+        browserFetchCandles(selectedSymbol, selectedInterval);
+      }
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [selectedSymbol, selectedInterval]);
+
+  // ── Periodic browser-side ticker fallback ──
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // If no server data in 15 seconds, try browser-side
+      const diag = marketEngine.getDiagnostics();
+      if (diag.realtimeUpdatesReceived === 0 || Date.now() - (snapshot?.lastUpdate ?? 0) > 15_000) {
+        browserFetchTickers();
+      }
+    }, 10_000);
+    return () => clearInterval(interval);
+  }, [snapshot?.lastUpdate]);
 
   // ── Recompute liveness age once per second ──
   useEffect(() => {
@@ -190,19 +274,21 @@ export function useMarketData(): UseMarketDataReturn {
       const exchange = PAIRS.find((p) => p.symbol === symbol)?.exchange ?? symbol;
       return marketEngine.getCandles(exchange, interval);
     },
-    [],
+    [snapshot], // Re-create when snapshot changes so candles are fresh
   );
 
   const setIntervalSafe = useCallback((interval: Interval) => {
     setSelectedInterval(interval);
+    fedKeyRef.current = ""; // reset dedup
     marketEngine.changeIntervals([interval]);
-    fedCandlesRef.current.clear(); // reset dedup so new interval candles get fed
   }, []);
 
   const refresh = useCallback(() => {
-    fedCandlesRef.current.clear();
+    fedKeyRef.current = "";
+    browserFetchTickers();
+    browserFetchCandles(selectedSymbol, selectedInterval);
     marketEngine.changeIntervals([selectedInterval]);
-  }, [selectedInterval]);
+  }, [selectedSymbol, selectedInterval]);
 
   const loading = !snapshot || data.every((d) => d.price === 0);
   const error: string | null =

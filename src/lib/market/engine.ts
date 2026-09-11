@@ -108,6 +108,8 @@ export class MarketEngine {
     seedErrors: 0,
   };
   private pollPairIndex = 0; // round-robin index for rate-limited REST polling
+  private lastServerDataTime = 0; // when Convex proxy last delivered data
+  private serverDataActive = false; // true once Convex proxy delivers first data
 
   constructor() {
     this.binance = new BinanceProvider();
@@ -486,11 +488,18 @@ export class MarketEngine {
   }
 
   private primaryHealth(): FeedHealth {
+    // Server-side Convex proxy data is the PRIMARY source now
+    if (this.serverDataActive && Date.now() - this.lastServerDataTime < 30_000) {
+      return "connected";
+    }
+    // Browser-side WebSocket (may not work in hosted environments)
     const d = this.binance.diagnostics;
     if (d.streamHealth === "connected") return "connected";
     if (this.bybit.diagnostics.streamHealth === "connected") return "connected";
     const anyRecentTick = Array.from(this.lastEvent.values()).some(t => Date.now() - t < 15_000);
     if (anyRecentTick) return "connected";
+    // No data from any source
+    if (this.serverDataActive) return "stale"; // was live, now stale
     return d.streamHealth === "error" || d.streamHealth === "connecting"
       ? this.bybit.diagnostics.streamHealth
       : d.streamHealth;
@@ -543,6 +552,8 @@ export class MarketEngine {
     this.diag.wsConnected = true;
     this.diag.realtimeUpdatesReceived++;
     this.diag.lastWsMessageAge = 0;
+    this.lastServerDataTime = Date.now();
+    this.serverDataActive = true;
     this.scheduleEmit();
   }
 
@@ -602,6 +613,8 @@ export class MarketEngine {
   /** Mark the feed as connected (called when proxy data arrives). */
   markServerConnected(): void {
     this.diag.wsConnected = true;
+    this.serverDataActive = true;
+    this.lastServerDataTime = Date.now();
   }
 }
 

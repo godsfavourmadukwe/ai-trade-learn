@@ -15,7 +15,7 @@ const INTERVAL_MAP: Record<string, string> = {
 
 const BINANCE_REST = "https://api.binance.com";
 
-// ── Mutations (internal, called by actions) ────────────────
+// ── Mutations (internal) ───────────────────────────────────
 
 export const upsertTicker = internalMutation({
   args: {
@@ -77,9 +77,9 @@ export const upsertCandle = internalMutation({
   },
 });
 
-// ── Actions (server-side, no CORS issues) ──────────────────
+// ── Actions (server-side) ──────────────────────────────────
 
-/** Fetch all 24h tickers from Binance and upsert into Convex. */
+/** Fetch all 24h tickers from Binance — FAST, ~1 second. */
 export const fetchTickers = internalAction({
   handler: async (ctx) => {
     try {
@@ -121,7 +121,7 @@ export const fetchTickers = internalAction({
   },
 });
 
-/** Fetch candles for a specific symbol and interval from Binance. */
+/** Fetch candles for ONE symbol+interval. */
 export const fetchCandles = internalAction({
   args: {
     symbol: v.string(),
@@ -129,7 +129,7 @@ export const fetchCandles = internalAction({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const limit = args.limit ?? 200;
+    const limit = args.limit ?? 100;
     const interval = INTERVAL_MAP[args.interval] ?? args.interval;
     try {
       const res = await fetch(
@@ -151,20 +151,13 @@ export const fetchCandles = internalAction({
 
         if (!Number.isFinite(time) || time <= 0) continue;
         if (!Number.isFinite(open) || open <= 0) continue;
-        if (!Number.isFinite(high) || high <= 0) continue;
-        if (!Number.isFinite(low) || low <= 0) continue;
         if (!Number.isFinite(close) || close <= 0) continue;
         if (high < low) continue;
 
         await ctx.runMutation(internal.marketProxy.upsertCandle, {
           symbol: args.symbol,
           interval,
-          time,
-          open,
-          high,
-          low,
-          close,
-          volume,
+          time, open, high, low, close, volume,
           closed: true,
         });
         inserted++;
@@ -177,72 +170,83 @@ export const fetchCandles = internalAction({
   },
 });
 
-/** Fetch candles for all tracked symbols. */
-export const fetchAllCandles = internalAction({
-  args: {
-    interval: v.string(),
-    limit: v.optional(v.number()),
-  },
-  handler: async (ctx, args) => {
-    const results: Array<{ symbol: string; ok: boolean; inserted?: number; error?: string }> = [];
-    for (const symbol of EXCHANGE_SYMBOLS) {
-      const r = await ctx.runAction(internal.marketProxy.fetchCandles, {
-        symbol,
-        interval: args.interval,
-        limit: args.limit,
-      });
-      results.push({ symbol, ...r });
-    }
-    return results;
-  },
-});
+// ── Public actions (called from frontend via useAction) ─────
 
-// ── Self-perpetuating polling loop ─────────────────────────
-
-/** Start (or restart) the server-side polling loop. Safe to call multiple times. */
+/**
+ * Start polling — ONLY fetches tickers (fast, ~2s).
+ * Schedules separate actions for candle fetching and future polls.
+ */
 export const startPolling = action({
   args: {},
   handler: async (ctx) => {
-    // Kick off the first tickers fetch
+    // 1. Fetch tickers immediately (fast — one HTTP request + 10 mutations)
     await ctx.runAction(internal.marketProxy.fetchTickers);
-    // Kick off the first candle fetch for default interval
-    await ctx.runAction(internal.marketProxy.fetchAllCandles, { interval: "1m", limit: 200 });
 
-    // Schedule the next tickers poll in 5 seconds
+    // 2. Schedule candle fetches one symbol at a time (avoids timeout)
+    for (let i = 0; i < EXCHANGE_SYMBOLS.length; i++) {
+      await ctx.scheduler.runAfter(
+        i * 2000, // stagger by 2s each to avoid rate limits
+        internal.marketProxy.pollCandlesForSymbol,
+        { symbol: EXCHANGE_SYMBOLS[i], interval: "1m" },
+      );
+    }
+
+    // 3. Schedule recurring ticker poll every 5s
     await ctx.scheduler.runAfter(5000, internal.marketProxy.pollTickers);
-    // Schedule the next candle poll in 15 seconds
-    await ctx.scheduler.runAfter(15000, internal.marketProxy.pollCandles);
+
+    // 4. Schedule recurring candle poll every 30s (one symbol per cycle)
+    await ctx.scheduler.runAfter(30000, internal.marketProxy.pollNextCandle);
+
+    return { ok: true };
   },
 });
 
-/** Self-perpetuating ticker poll (runs every 5 seconds). */
+/** Self-perpetuating ticker poll (every 5s). */
 export const pollTickers = internalAction({
   handler: async (ctx) => {
     await ctx.runAction(internal.marketProxy.fetchTickers);
-    // Schedule next poll
     await ctx.scheduler.runAfter(5000, internal.marketProxy.pollTickers);
   },
 });
 
-/** Self-perpetuating candle poll (runs every 15 seconds). */
-export const pollCandles = internalAction({
-  handler: async (ctx) => {
-    await ctx.runAction(internal.marketProxy.fetchAllCandles, { interval: "1m", limit: 200 });
-    // Schedule next poll
-    await ctx.scheduler.runAfter(15000, internal.marketProxy.pollCandles);
+/** Fetch candles for ONE symbol. Self-schedules next symbol. */
+export const pollCandlesForSymbol = internalAction({
+  args: {
+    symbol: v.string(),
+    interval: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.runAction(internal.marketProxy.fetchCandles, {
+      symbol: args.symbol,
+      interval: args.interval,
+      limit: 100,
+    });
   },
 });
 
-// ── Queries (read from Convex, real-time subscription) ──────
+/** Rotate through symbols for candle updates. */
+let candlePollIndex = 0;
+export const pollNextCandle = internalAction({
+  handler: async (ctx) => {
+    const symbol = EXCHANGE_SYMBOLS[candlePollIndex % EXCHANGE_SYMBOLS.length];
+    candlePollIndex++;
+    await ctx.runAction(internal.marketProxy.fetchCandles, {
+      symbol,
+      interval: "1m",
+      limit: 100,
+    });
+    await ctx.scheduler.runAfter(30000, internal.marketProxy.pollNextCandle);
+  },
+});
 
-/** Get latest ticker for all symbols. */
+// ── Queries (real-time subscriptions) ──────────────────────
+
 export const getTickers = query({
   handler: async (ctx) => {
     return await ctx.db.query("liveTickers").collect();
   },
 });
 
-/** Get latest ticker for a specific symbol. */
 export const getTicker = query({
   args: { symbol: v.string() },
   handler: async (ctx, args) => {
@@ -253,12 +257,8 @@ export const getTicker = query({
   },
 });
 
-/** Get candles for a symbol and interval, sorted ascending. */
 export const getCandles = query({
-  args: {
-    symbol: v.string(),
-    interval: v.string(),
-  },
+  args: { symbol: v.string(), interval: v.string() },
   handler: async (ctx, args) => {
     const rows = await ctx.db
       .query("liveCandles")
@@ -271,14 +271,6 @@ export const getCandles = query({
   },
 });
 
-/** Get all candles across all symbols and intervals. */
-export const getAllCandles = query({
-  handler: async (ctx) => {
-    return await ctx.db.query("liveCandles").collect();
-  },
-});
-
-/** Health check — are we receiving data? */
 export const getHealth = query({
   handler: async (ctx) => {
     const tickers = await ctx.db.query("liveTickers").collect();
