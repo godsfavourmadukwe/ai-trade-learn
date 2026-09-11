@@ -508,6 +508,101 @@ export class MarketEngine {
   getDiagnostics(): EngineDiagnosticsDetail {
     return { ...this.diag };
   }
+
+  // ── Server-side data ingestion (from Convex proxy) ──────
+
+  /**
+   * Ingest a ticker snapshot from the Convex server-side proxy.
+   * This bypasses browser CORS/CSP restrictions entirely.
+   */
+  ingestServerTicker(data: {
+    symbol: string;
+    price: number;
+    change24hPercent: number;
+    high24h: number;
+    low24h: number;
+    volume24h: number;
+    open24h: number;
+    lastUpdate: number;
+  }): void {
+    if (!Number.isFinite(data.price) || data.price <= 0) return;
+
+    this.stats.set(data.symbol, {
+      price: data.price,
+      change24hPercent: data.change24hPercent,
+      high24h: data.high24h,
+      low24h: data.low24h,
+      volume24h: data.volume24h,
+      open24h: data.open24h,
+      lastUpdated: data.lastUpdate,
+      source: "convex_proxy",
+    });
+    this.lastTick.set(data.symbol, data.price);
+    this.lastEvent.set(data.symbol, data.lastUpdate);
+    this.dirtySymbols.add(data.symbol);
+    this.diag.wsConnected = true;
+    this.diag.realtimeUpdatesReceived++;
+    this.diag.lastWsMessageAge = 0;
+    this.scheduleEmit();
+  }
+
+  /**
+   * Ingest candles from the Convex server-side proxy.
+   * Seeds the candle store on first load, updates incrementally after.
+   */
+  ingestServerCandles(
+    symbol: string,
+    interval: Interval,
+    candlesData: Array<{
+      time: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+      closed: boolean;
+    }>,
+  ): void {
+    if (candlesData.length === 0) return;
+    const key = `${symbol}|${interval}`;
+    const store = this.candles.getStore(symbol, interval);
+    const isEmpty = store.all().length === 0;
+
+    for (const c of candlesData) {
+      const candle: Candle = {
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        closed: c.closed,
+      };
+      if (isEmpty) {
+        store.seedFromHistory([candle]);
+      } else {
+        store.applyKline(candle, Date.now());
+      }
+    }
+
+    const latest = candlesData[candlesData.length - 1];
+    if (latest && Number.isFinite(latest.close) && latest.close > 0) {
+      this.lastTick.set(symbol, latest.close);
+      this.lastEvent.set(symbol, Date.now());
+      this.dirtySymbols.add(symbol);
+    }
+
+    this.dirtyCandles.add(key);
+    this.allDirty = true;
+    this.diag.historicalCandlesLoaded += candlesData.length;
+    this.diag.wsConnected = true;
+    this.scheduleEmit();
+  }
+
+  /** Mark the feed as connected (called when proxy data arrives). */
+  markServerConnected(): void {
+    this.diag.wsConnected = true;
+  }
 }
 
 // Module-level singleton

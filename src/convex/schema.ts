@@ -329,6 +329,33 @@ const schema = defineSchema(
       updatedAt: v.number(),
     }).index("by_user", ["userId"]),
 
+    // ── Live Market Data (server-side proxy) ─────────────
+
+    // Live tickers — one row per symbol, updated every ~5s by server-side polling
+    liveTickers: defineTable({
+      symbol: v.string(), // exchange-native, e.g. "BTCUSDT"
+      price: v.number(),
+      change24hPercent: v.number(),
+      high24h: v.number(),
+      low24h: v.number(),
+      volume24h: v.number(), // quote volume
+      open24h: v.number(),
+      lastUpdate: v.number(), // epoch ms
+    }).index("by_symbol", ["symbol"]),
+
+    // Live candles — per symbol+interval, updated by server-side polling
+    liveCandles: defineTable({
+      symbol: v.string(),
+      interval: v.string(),
+      time: v.number(), // candle open time (epoch ms)
+      open: v.number(),
+      high: v.number(),
+      low: v.number(),
+      close: v.number(),
+      volume: v.number(),
+      closed: v.boolean(),
+    }).index("by_symbol_interval", ["symbol", "interval", "time"]),
+
     // ── AI Trade Arena Tables ──────────────────────────
 
     // Arena Trades — demo trades executed by the AI engine

@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useQuery, useMutation, useAction } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { marketEngine, type EngineSnapshot, type EngineDiagnosticsDetail } from "@/lib/market/engine";
 import { PAIRS, displayName } from "@/lib/market/symbols";
 import type { Candle, FeedHealth, Interval } from "@/lib/market/types";
@@ -49,7 +51,31 @@ export function useMarketData(): UseMarketDataReturn {
   const [tickAgeMs, setTickAgeMs] = useState(0);
   const mountedRef = useRef(true);
 
-  // Connect the engine once per app lifetime; subscribe to snapshots.
+  // ── Convex server-side data subscriptions ──
+  const convexTickers = useQuery(api.marketProxy.getTickers);
+  const convexCandlesBtc = useQuery(api.marketProxy.getCandles, { symbol: "BTCUSDT", interval: selectedInterval });
+  const convexCandlesEth = useQuery(api.marketProxy.getCandles, { symbol: "ETHUSDT", interval: selectedInterval });
+  const convexCandlesSol = useQuery(api.marketProxy.getCandles, { symbol: "SOLUSDT", interval: selectedInterval });
+  const convexCandlesBnb = useQuery(api.marketProxy.getCandles, { symbol: "BNBUSDT", interval: selectedInterval });
+  const convexCandlesXrp = useQuery(api.marketProxy.getCandles, { symbol: "XRPUSDT", interval: selectedInterval });
+  const convexCandlesAda = useQuery(api.marketProxy.getCandles, { symbol: "ADAUSDT", interval: selectedInterval });
+  const convexCandlesDoge = useQuery(api.marketProxy.getCandles, { symbol: "DOGEUSDT", interval: selectedInterval });
+  const convexCandlesAvax = useQuery(api.marketProxy.getCandles, { symbol: "AVAXUSDT", interval: selectedInterval });
+  const convexCandlesDot = useQuery(api.marketProxy.getCandles, { symbol: "DOTUSDT", interval: selectedInterval });
+  const convexCandlesLink = useQuery(api.marketProxy.getCandles, { symbol: "LINKUSDT", interval: selectedInterval });
+
+  const startPolling = useAction(api.marketProxy.startPolling);
+  const pollingStartedRef = useRef(false);
+
+  // ── Start server-side polling on mount ──
+  useEffect(() => {
+    if (pollingStartedRef.current) return;
+    pollingStartedRef.current = true;
+    // Fire-and-forget: start the server-side polling loop
+    startPolling().catch((e) => console.warn("[market] startPolling failed:", e));
+  }, [startPolling]);
+
+  // ── Connect the engine once per app lifetime; subscribe to snapshots ──
   useEffect(() => {
     mountedRef.current = true;
     const unsubscribe = marketEngine.subscribe((snap) => {
@@ -62,8 +88,64 @@ export function useMarketData(): UseMarketDataReturn {
     };
   }, []);
 
-  // Recompute a liveness "age" once per second so the UI can show staleness
-  // without re-rendering on every tick.
+  // ── Feed Convex ticker data into engine ──
+  useEffect(() => {
+    if (!convexTickers || convexTickers.length === 0) return;
+    for (const t of convexTickers) {
+      marketEngine.ingestServerTicker({
+        symbol: t.symbol,
+        price: t.price,
+        change24hPercent: t.change24hPercent,
+        high24h: t.high24h,
+        low24h: t.low24h,
+        volume24h: t.volume24h,
+        open24h: t.open24h,
+        lastUpdate: t.lastUpdate,
+      });
+    }
+    marketEngine.markServerConnected();
+  }, [convexTickers]);
+
+  // ── Feed Convex candle data into engine ──
+  const candleMap: Record<string, typeof convexCandlesBtc> = useMemo(() => ({
+    BTCUSDT: convexCandlesBtc,
+    ETHUSDT: convexCandlesEth,
+    SOLUSDT: convexCandlesSol,
+    BNBUSDT: convexCandlesBnb,
+    XRPUSDT: convexCandlesXrp,
+    ADAUSDT: convexCandlesAda,
+    DOGEUSDT: convexCandlesDoge,
+    AVAXUSDT: convexCandlesAvax,
+    DOTUSDT: convexCandlesDot,
+    LINKUSDT: convexCandlesLink,
+  }), [convexCandlesBtc, convexCandlesEth, convexCandlesSol, convexCandlesBnb, convexCandlesXrp, convexCandlesAda, convexCandlesDoge, convexCandlesAvax, convexCandlesDot, convexCandlesLink]);
+
+  // Feed candles into engine for each symbol
+  const fedCandlesRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const symbol of Object.keys(candleMap)) {
+      const candles = candleMap[symbol];
+      if (!candles || candles.length === 0) continue;
+      const feedKey = `${symbol}|${selectedInterval}|${candles.length}|${candles[candles.length - 1]?.time}`;
+      if (fedCandlesRef.current.has(feedKey)) continue;
+      fedCandlesRef.current.add(feedKey);
+      marketEngine.ingestServerCandles(
+        symbol,
+        selectedInterval,
+        candles.map((c) => ({
+          time: c.time as number,
+          open: c.open as number,
+          high: c.high as number,
+          low: c.low as number,
+          close: c.close as number,
+          volume: c.volume as number,
+          closed: c.closed as boolean,
+        })),
+      );
+    }
+  }, [candleMap, selectedInterval]);
+
+  // ── Recompute liveness age once per second ──
   useEffect(() => {
     const t = setInterval(() => {
       const last = snapshot?.lastUpdate ?? 0;
@@ -72,6 +154,7 @@ export function useMarketData(): UseMarketDataReturn {
     return () => clearInterval(t);
   }, [snapshot?.lastUpdate]);
 
+  // ── Build MarketData[] from engine snapshot ──
   const data: MarketData[] = useMemo(() => {
     if (!snapshot) return [];
     return PAIRS.map((p) => {
@@ -113,10 +196,11 @@ export function useMarketData(): UseMarketDataReturn {
   const setIntervalSafe = useCallback((interval: Interval) => {
     setSelectedInterval(interval);
     marketEngine.changeIntervals([interval]);
+    fedCandlesRef.current.clear(); // reset dedup so new interval candles get fed
   }, []);
 
   const refresh = useCallback(() => {
-    // Re-run the same seed/backfill path used for recovery.
+    fedCandlesRef.current.clear();
     marketEngine.changeIntervals([selectedInterval]);
   }, [selectedInterval]);
 
@@ -138,5 +222,19 @@ export function useMarketData(): UseMarketDataReturn {
     selectedInterval,
     setInterval: setIntervalSafe,
     tickAgeMs,
+    diagnosticsDetail: snapshot?.diagnosticsDetail ?? {
+      wsConnected: false,
+      wsUrl: "",
+      wsReconnects: 0,
+      lastWsMessageAge: 0,
+      restPollActive: false,
+      lastRestPollTime: 0,
+      restPollErrors: 0,
+      historicalCandlesLoaded: 0,
+      realtimeUpdatesReceived: 0,
+      symbolsWithData: 0,
+      lastSeedAttempt: 0,
+      seedErrors: 0,
+    },
   };
 }
