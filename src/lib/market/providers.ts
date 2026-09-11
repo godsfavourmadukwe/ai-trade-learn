@@ -13,9 +13,7 @@ import {
   isValidCandle,
 } from "./types";
 
-// ------------------------------------------------------------
 // Shared provider plumbing: watchdog, backoff, heartbeat, latency
-// ------------------------------------------------------------
 
 const BACKOFF_STEPS_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 const WATCHDOG_STALE_MS = 20_000; // no messages for 20s → consider stale
@@ -48,7 +46,7 @@ export abstract class BaseProvider implements MarketDataProvider {
   protected serverTimeOffsetMs: number | null = null;
   protected latestPrices = new Map<string, number>();
 
-  // ---- subclasses implement ----
+  // subclasses implement
   protected abstract wsUrl(): string;
   protected abstract onOpen(): void;
   protected abstract onMessage(raw: MessageEvent): void;
@@ -136,7 +134,6 @@ export abstract class BaseProvider implements MarketDataProvider {
     }, delay);
   }
 
-  /** Watchdog: stale detection + liveness (§11, §24). */
   private startWatchdog(): void {
     if (this.watchdogTimer) return;
     this.watchdogTimer = setInterval(() => {
@@ -147,7 +144,6 @@ export abstract class BaseProvider implements MarketDataProvider {
           this.diagnostics.streamHealth = "stale";
           this.onHealth?.("stale", `no messages for ${Math.round(sinceMsg / 1000)}s`);
         }
-        // Force reconnect a dead-but-open socket
         if (sinceMsg > WATCHDOG_STALE_MS * 3) {
           try { this.ws?.close(); } catch { /* noop */ }
         }
@@ -182,7 +178,6 @@ export abstract class BaseProvider implements MarketDataProvider {
     this.onTicker?.(ev);
   }
 
-  // ---- REST history with server-time sync + validation ----
   async getHistoricalCandles(symbol: string, interval: Interval, limit: number): Promise<HistoricalCandlesResult> {
     const t0 = Date.now();
     const res = await fetch(this.restKlineUrl(symbol, interval, limit));
@@ -224,18 +219,26 @@ export abstract class BaseProvider implements MarketDataProvider {
 
 // ------------------------------------------------------------
 // Binance provider (primary)
-// Streams: kline_<interval> for every subscribed interval,
-//          aggTrade for live price, bookTicker for bid/ask.
+// Production WebSocket + REST endpoints
 // ------------------------------------------------------------
 
-const BINANCE_WS_PRIMARY = "wss://data-stream.binance.vision/stream";
-const BINANCE_WS_FALLBACK = "wss://stream.binance.com:9443/stream";
+// Multiple WS endpoints for failover
+const BINANCE_WS_URLS = [
+  "wss://stream.binance.com:9443/stream",
+  "wss://stream.binance.com:9443/ws",
+  "wss://stream.binance.com:443/stream",
+];
+
+const BINANCE_REST_BASE = "https://api.binance.com";
+const BINANCE_REST_FALLBACK = "https://data-api.binance.vision";
 
 export class BinanceProvider extends BaseProvider {
   readonly name = "binance";
   private symbols: string[] = [];
   private intervals: Interval[] = [];
-  private primary = true;
+  private wsUrlIndex = 0;
+  private restBase = BINANCE_REST_BASE;
+  private restTried = false;
 
   constructor() {
     super();
@@ -243,11 +246,24 @@ export class BinanceProvider extends BaseProvider {
   }
 
   protected wsUrl(): string {
-    return this.primary ? BINANCE_WS_PRIMARY : BINANCE_WS_FALLBACK;
+    return BINANCE_WS_URLS[this.wsUrlIndex % BINANCE_WS_URLS.length];
+  }
+
+  // Cycle to next WS URL on failure
+  private cycleWsUrl(): void {
+    this.wsUrlIndex++;
+    if (this.wsUrlIndex >= BINANCE_WS_URLS.length) {
+      // All WS URLs exhausted — fall back to REST polling
+      this.restBase = BINANCE_REST_FALLBACK;
+      this.wsUrlIndex = 0;
+    }
   }
 
   protected onOpen(): void {
-    this.syncServerTime("https://data-api.binance.vision/api/v3/time").then(() => this.sendSubscribe());
+    // Don't wait for server time sync — subscribe immediately for faster data
+    this.sendSubscribe();
+    // Sync server time in background (non-blocking)
+    this.syncServerTime(`${this.restBase}/api/v3/time`);
   }
 
   private sendSubscribe(): void {
@@ -345,7 +361,7 @@ export class BinanceProvider extends BaseProvider {
   protected parse(_payload: unknown): void { /* handled inline in onMessage */ }
 
   protected restKlineUrl(symbol: string, interval: Interval, limit: number): string {
-    return `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    return `${this.restBase}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   }
 
   protected parseKlineArray(a: unknown[]): Candle | null {
@@ -362,13 +378,13 @@ export class BinanceProvider extends BaseProvider {
 
   /** Called by engine on repeated primary-URL failures. */
   failover(): void {
-    this.primary = !this.primary;
+    this.cycleWsUrl();
   }
 }
 
 // ------------------------------------------------------------
 // Bybit provider (failover)
-// Topics: kline.{interval}.{symbol}, publicTrade.{symbol}, tickers.{symbol}
+// Production WebSocket + REST endpoints
 // ------------------------------------------------------------
 
 const BYBIT_INTERVAL: Record<Interval, string> = {
@@ -379,6 +395,7 @@ export class BybitProvider extends BaseProvider {
   readonly name = "bybit";
   private symbols: string[] = [];
   private intervals: Interval[] = [];
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     super();
@@ -396,6 +413,10 @@ export class BybitProvider extends BaseProvider {
       for (const iv of this.intervals) args.push(`kline.${BYBIT_INTERVAL[iv]}.${s}`);
     }
     this.ws.send(JSON.stringify({ op: "subscribe", args }));
+    // Start ping interval
+    if (!this.pingTimer) {
+      this.pingTimer = setInterval(() => this.heartbeat(), 20_000);
+    }
   }
 
   private heartbeat(): void {
@@ -403,8 +424,6 @@ export class BybitProvider extends BaseProvider {
       this.ws.send(JSON.stringify({ op: "ping" }));
     }
   }
-  // ping every 20s via watchdog piggyback
-  setIntervalPing(): void { setInterval(() => this.heartbeat(), 20_000); }
 
   subscribeSymbols(symbols: string[], intervals: Interval[]): void {
     this.symbols = symbols;
@@ -443,7 +462,6 @@ export class BybitProvider extends BaseProvider {
     }
 
     if (topic.startsWith("tickers.")) {
-      // Bybit spot tickers push lastPrice frequently; full 24h fields on snapshot
       const d = msg.data as Record<string, unknown> | undefined;
       if (!d) { this.diagnostics.invalidMessages++; return; }
       const symbol = topic.split(".")[1] ?? "";
@@ -502,7 +520,6 @@ export class BybitProvider extends BaseProvider {
     const list = j.result?.list ?? [];
     const candles: Candle[] = [];
     for (const row of list) {
-      // Bybit order: start, open, high, low, close, volume, turnover, closed
       const c: Candle = {
         time: Number(row[0]), open: Number(row[1]), high: Number(row[2]),
         low: Number(row[3]), close: Number(row[4]), volume: Number(row[5]), closed: true,
@@ -572,7 +589,6 @@ export class ProviderFailover {
     this.secondary?.subscribeSymbols(symbols, intervals);
   }
 
-  /** Switch to the secondary provider after repeated primary failures. */
   switchToSecondary(): boolean {
     if (!this.secondary || this.usingSecondary) return false;
     this.usingSecondary = true;
@@ -589,5 +605,4 @@ export class ProviderFailover {
   }
 }
 
-// Re-export for convenience
 export { alignTime };
