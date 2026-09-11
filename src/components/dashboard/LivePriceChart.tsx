@@ -1,6 +1,11 @@
 import { useEffect, useRef, memo } from "react";
 import { cn } from "@/lib/utils";
-import { buildPricePoints, getDerivedPrice, type CandlePoint } from "./live-price-utils";
+import {
+  buildPricePoints,
+  getDerivedPrice,
+  type CandlePoint,
+  type PricePoint,
+} from "./live-price-utils";
 
 interface LivePriceChartProps {
   /** Historical candles driving the chart; replaced on every engine emission. */
@@ -15,12 +20,6 @@ interface LivePriceChartProps {
   showGradient?: boolean;
   currentPrice?: number;
   previousPrice?: number;
-}
-
-interface PricePoint {
-  time: number;
-  price: number;
-  close?: number;
 }
 
 const COLORS = {
