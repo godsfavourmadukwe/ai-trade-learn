@@ -3,9 +3,14 @@
 //
 // Event-driven orchestration: providers → candle manager → UI
 //
-// REST is used for initialization, recovery, and fallback polling
-// when WebSocket connections fail.
+// State machine:
+//   IDLE → CONNECTING → LIVE → STALE → RECONNECTING → LIVE
+//                               ↓
+//                            ERROR
+//
+// REST is used for initialization and recovery.
 // WebSocket is the primary live source.
+// REST polling is a last resort with strict rate limiting.
 // ============================================================
 
 import { CandleManager } from "./candle-manager";
@@ -14,7 +19,6 @@ import { EXCHANGE_SYMBOLS, PAIRS } from "./symbols";
 import {
   type Candle,
   type Diagnostics,
-  type EngineEvent,
   type FeedHealth,
   type Interval,
   type SymbolStats,
@@ -23,9 +27,10 @@ import {
   alignTime,
 } from "./types";
 
-const HISTORY_LIMIT = 200; // candles seeded per (symbol, interval)
-const BACKFILL_LIMIT = 60; // candles fetched to repair a gap
-const REST_POLL_INTERVAL_MS = 10_000; // REST polling fallback interval
+const HISTORY_LIMIT = 200;
+const BACKFILL_LIMIT = 60;
+const REST_POLL_INTERVAL_MS = 15_000;
+const REST_POLL_MAX_PAIRS_PER_CYCLE = 2; // rate limit: max 2 pairs per REST poll cycle
 
 export interface SymbolSnapshot {
   symbol: string;
@@ -47,6 +52,23 @@ export interface EngineSnapshot {
   activeProvider: string;
   feedHealth: FeedHealth;
   lastUpdate: number;
+  /** Diagnostics panel data */
+  diagnosticsDetail: EngineDiagnosticsDetail;
+}
+
+export interface EngineDiagnosticsDetail {
+  wsConnected: boolean;
+  wsUrl: string;
+  wsReconnects: number;
+  lastWsMessageAge: number;
+  restPollActive: boolean;
+  lastRestPollTime: number;
+  restPollErrors: number;
+  historicalCandlesLoaded: number;
+  realtimeUpdatesReceived: number;
+  symbolsWithData: number;
+  lastSeedAttempt: number;
+  seedErrors: number;
 }
 
 type Listener = (snapshot: EngineSnapshot) => void;
@@ -63,12 +85,29 @@ export class MarketEngine {
   private emitTimer: ReturnType<typeof setTimeout> | null = null;
   private dirtySymbols = new Set<string>();
   private dirtyCandles = new Set<string>();
+  private allDirty = false; // flag: emit ALL candle data (not just dirty)
   private finalizeTimer: ReturnType<typeof setInterval> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private seeded = new Set<string>();
   private intervals: Interval[] = ["1m"];
   private connected = false;
-  private wsConnectedAtLeastOnce = false;
+
+  // Diagnostics
+  private diag: EngineDiagnosticsDetail = {
+    wsConnected: false,
+    wsUrl: "",
+    wsReconnects: 0,
+    lastWsMessageAge: 0,
+    restPollActive: false,
+    lastRestPollTime: 0,
+    restPollErrors: 0,
+    historicalCandlesLoaded: 0,
+    realtimeUpdatesReceived: 0,
+    symbolsWithData: 0,
+    lastSeedAttempt: 0,
+    seedErrors: 0,
+  };
+  private pollPairIndex = 0; // round-robin index for rate-limited REST polling
 
   constructor() {
     this.binance = new BinanceProvider();
@@ -80,7 +119,9 @@ export class MarketEngine {
       this.lastTick.set(ev.symbol, ev.price);
       this.lastEvent.set(ev.symbol, ev.eventTime);
       this.dirtySymbols.add(ev.symbol);
-      this.wsConnectedAtLeastOnce = true;
+      this.diag.wsConnected = true;
+      this.diag.realtimeUpdatesReceived++;
+      this.diag.lastWsMessageAge = 0;
       this.scheduleEmit();
     };
 
@@ -99,7 +140,9 @@ export class MarketEngine {
       this.lastTick.set(ev.symbol, ev.lastPrice);
       this.lastEvent.set(ev.symbol, ev.eventTime);
       this.dirtySymbols.add(ev.symbol);
-      this.wsConnectedAtLeastOnce = true;
+      this.diag.wsConnected = true;
+      this.diag.realtimeUpdatesReceived++;
+      this.diag.lastWsMessageAge = 0;
       this.scheduleEmit();
     };
 
@@ -112,12 +155,19 @@ export class MarketEngine {
       this.dirtySymbols.add(ev.symbol);
       this.dirtyCandles.add(`${ev.symbol}|${ev.interval}`);
       if (result.gapDetected) this.backfill(ev.symbol, ev.interval);
-      this.wsConnectedAtLeastOnce = true;
+      this.diag.wsConnected = true;
+      this.diag.realtimeUpdatesReceived++;
+      this.diag.lastWsMessageAge = 0;
       this.scheduleEmit();
     };
 
     this.failover.onHealth = (_source, health, detail) => {
       if (detail) console.debug(`[${_source}] ${health}: ${detail}`);
+      if (health === "connected") {
+        this.diag.wsConnected = true;
+      } else if (health === "error" || health === "reconnecting") {
+        this.diag.wsConnected = false;
+      }
       this.scheduleEmit();
     };
   }
@@ -140,12 +190,17 @@ export class MarketEngine {
     };
     this.failover.subscribeSymbols(EXCHANGE_SYMBOLS, intervals);
     this.failover.connect();
+    // Emit initial empty state so UI shows loading, not stale data
+    this.allDirty = true;
+    this.scheduleEmit();
+    // Seed historical data
     this.seedAll();
     // Wall-clock finalization
     this.finalizeTimer = setInterval(() => this.finalizeAll(), 1000);
-    // REST polling fallback — if WS doesn't connect within a few seconds,
-    // poll via REST so the user sees data
-    this.pollTimer = setInterval(() => this.restPoll(), REST_POLL_INTERVAL_MS);
+    // REST polling fallback — only after WS has had time to connect
+    setTimeout(() => {
+      this.pollTimer = setInterval(() => this.restPoll(), REST_POLL_INTERVAL_MS);
+    }, 5000); // 5s grace period for WS to connect
   }
 
   disconnect(): void {
@@ -178,29 +233,40 @@ export class MarketEngine {
   private async seed(symbol: string, interval: Interval): Promise<void> {
     const key = `${symbol}|${interval}`;
     this.seeded.add(key);
+    this.diag.lastSeedAttempt = Date.now();
     try {
       const res = await this.binance.getHistoricalCandles(symbol, interval, HISTORY_LIMIT);
       const store = this.candles.getStore(symbol, interval);
-      store.seedFromHistory(res.candles);
-      this.dirtyCandles.add(key);
-      this.dirtySymbols.add(symbol);
-      this.scheduleEmit();
+      const { seeded } = store.seedFromHistory(res.candles);
+      this.diag.historicalCandlesLoaded += seeded;
+      if (seeded > 0) {
+        this.dirtyCandles.add(key);
+        this.dirtySymbols.add(symbol);
+        this.allDirty = true; // send all candles on first load
+        this.scheduleEmit();
+      }
     } catch (e) {
       console.warn(`[engine] seed failed ${key}`, e);
+      this.diag.seedErrors++;
       try {
         const res = await this.bybit.getHistory(symbol, interval, HISTORY_LIMIT);
         const store = this.candles.getStore(symbol, interval);
-        store.seedFromHistory(res.candles);
-        this.dirtyCandles.add(key);
-        this.dirtySymbols.add(symbol);
-        this.scheduleEmit();
+        const { seeded } = store.seedFromHistory(res.candles);
+        this.diag.historicalCandlesLoaded += seeded;
+        if (seeded > 0) {
+          this.dirtyCandles.add(key);
+          this.dirtySymbols.add(symbol);
+          this.allDirty = true;
+          this.scheduleEmit();
+        }
       } catch (e2) {
         console.warn(`[engine] bybit seed also failed ${key}`, e2);
+        this.diag.seedErrors++;
       }
     }
   }
 
-  // ---- Recovery & gap repair ----
+  // ---- Recovery ----
 
   private async revalidate(symbol: string, interval: Interval, lastEventTime: number | null): Promise<void> {
     const key = `${symbol}|${interval}`;
@@ -235,97 +301,31 @@ export class MarketEngine {
     }
   }
 
-  // ---- REST polling fallback ----
-  // If WebSocket is not delivering data, poll via REST every N seconds.
-  // This ensures the chart always shows data even in restrictive network environments.
+  // ---- REST polling fallback (rate-limited) ----
 
   private async restPoll(): Promise<void> {
-    // Only poll if we haven't received WS data recently
+    // Skip if WS is delivering data
     const latestWs = Math.max(0, ...Array.from(this.lastEvent.values()));
     const wsAge = Date.now() - latestWs;
-    if (wsAge < REST_POLL_INTERVAL_MS * 2) return; // WS is healthy, skip REST poll
+    if (wsAge < REST_POLL_INTERVAL_MS * 2) return;
 
-    console.debug("[engine] REST poll fallback — WS data stale");
+    // Skip if no symbols need data
+    if (EXCHANGE_SYMBOLS.length === 0) return;
 
-    // Poll each symbol for 24h ticker + latest price
-    for (const pair of PAIRS) {
-      try {
-        // Fetch latest kline (last 2 candles) to get current price
-        const res = await fetch(
-          `https://api.binance.com/api/v3/klines?symbol=${pair.exchange}&interval=1m&limit=2`
-        );
-        if (!res.ok) continue;
-        const rows = (await res.json()) as unknown[];
-        if (!Array.isArray(rows) || rows.length === 0) continue;
+    this.diag.restPollActive = true;
+    this.diag.lastRestPollTime = Date.now();
 
-        const latestRow = rows[rows.length - 1] as unknown[];
-        if (!Array.isArray(latestRow) || latestRow.length < 6) continue;
-
-        const close = Number(latestRow[4]);
-        if (!Number.isFinite(close) || close <= 0) continue;
-
-        this.lastTick.set(pair.exchange, close);
-        this.lastEvent.set(pair.exchange, Date.now());
-        this.dirtySymbols.add(pair.exchange);
-
-        // Update candle store with latest candle
-        const candle: Candle = {
-          time: Number(latestRow[0]),
-          open: Number(latestRow[1]),
-          high: Number(latestRow[2]),
-          low: Number(latestRow[3]),
-          close,
-          volume: Number(latestRow[5]),
-          closed: true,
-        };
-        const store = this.candles.getStore(pair.exchange, "1m");
-        store.applyKline(candle, Date.now());
-        this.dirtyCandles.add(`${pair.exchange}|1m`);
-      } catch {
-        // REST poll failed for this pair — skip silently
-      }
+    // Rate limit: poll only 2 pairs per cycle, round-robin
+    const startIdx = this.pollPairIndex % EXCHANGE_SYMBOLS.length;
+    const pairsToPoll: string[] = [];
+    for (let i = 0; i < REST_POLL_MAX_PAIRS_PER_CYCLE && i < EXCHANGE_SYMBOLS.length; i++) {
+      pairsToPoll.push(EXCHANGE_SYMBOLS[(startIdx + i) % EXCHANGE_SYMBOLS.length]);
     }
+    this.pollPairIndex = (startIdx + REST_POLL_MAX_PAIRS_PER_CYCLE) % EXCHANGE_SYMBOLS.length;
 
-    // Also try Bybit for pairs that Binance REST couldn't reach
-    for (const pair of PAIRS) {
-      if (this.lastTick.has(pair.exchange) && (Date.now() - (this.lastEvent.get(pair.exchange) ?? 0)) < REST_POLL_INTERVAL_MS) continue;
-      try {
-        const res = await fetch(
-          `https://api.bybit.com/v5/market/kline?category=spot&symbol=${pair.exchange}&interval=1&limit=2`
-        );
-        if (!res.ok) continue;
-        const j = (await res.json()) as { result?: { list?: unknown[][] } };
-        const list = j.result?.list ?? [];
-        if (list.length === 0) continue;
+    console.debug(`[engine] REST poll fallback for ${pairsToPoll.join(", ")}`);
 
-        const latestRow = list[0]; // Bybit returns descending
-        if (!Array.isArray(latestRow) || latestRow.length < 6) continue;
-
-        const close = Number(latestRow[4]);
-        if (!Number.isFinite(close) || close <= 0) continue;
-
-        this.lastTick.set(pair.exchange, close);
-        this.lastEvent.set(pair.exchange, Date.now());
-        this.dirtySymbols.add(pair.exchange);
-
-        const candle: Candle = {
-          time: Number(latestRow[0]),
-          open: Number(latestRow[1]),
-          high: Number(latestRow[2]),
-          low: Number(latestRow[3]),
-          close,
-          volume: Number(latestRow[5]),
-          closed: true,
-        };
-        const store = this.candles.getStore(pair.exchange, "1m");
-        store.applyKline(candle, Date.now());
-        this.dirtyCandles.add(`${pair.exchange}|1m`);
-      } catch {
-        // skip
-      }
-    }
-
-    // Also poll 24h ticker for volume/change stats
+    // Fetch 24h ticker (single request for all symbols)
     try {
       const res = await fetch("https://api.binance.com/api/v3/ticker/24hr");
       if (res.ok) {
@@ -348,17 +348,57 @@ export class MarketEngine {
             lastUpdated: Date.now(),
             source: "binance_rest_poll",
           });
+          this.lastTick.set(pair.exchange, last);
+          this.lastEvent.set(pair.exchange, Date.now());
           this.dirtySymbols.add(pair.exchange);
         }
       }
     } catch {
-      // ticker poll failed — skip
+      this.diag.restPollErrors++;
     }
 
+    // Fetch latest kline for each polled pair (rate-limited)
+    for (const exchangeSymbol of pairsToPoll) {
+      try {
+        const res = await fetch(
+          `https://api.binance.com/api/v3/klines?symbol=${exchangeSymbol}&interval=1m&limit=2`
+        );
+        if (!res.ok) continue;
+        const rows = (await res.json()) as unknown[];
+        if (!Array.isArray(rows) || rows.length === 0) continue;
+
+        const latestRow = rows[rows.length - 1] as unknown[];
+        if (!Array.isArray(latestRow) || latestRow.length < 6) continue;
+
+        const close = Number(latestRow[4]);
+        if (!Number.isFinite(close) || close <= 0) continue;
+
+        this.lastTick.set(exchangeSymbol, close);
+        this.lastEvent.set(exchangeSymbol, Date.now());
+        this.dirtySymbols.add(exchangeSymbol);
+
+        const candle: Candle = {
+          time: Number(latestRow[0]),
+          open: Number(latestRow[1]),
+          high: Number(latestRow[2]),
+          low: Number(latestRow[3]),
+          close,
+          volume: Number(latestRow[5]),
+          closed: true,
+        };
+        const store = this.candles.getStore(exchangeSymbol, "1m");
+        store.applyKline(candle, Date.now());
+        this.dirtyCandles.add(`${exchangeSymbol}|1m`);
+      } catch {
+        this.diag.restPollErrors++;
+      }
+    }
+
+    this.diag.restPollActive = false;
     this.scheduleEmit();
   }
 
-  /** Wall-clock finalization of the forming candle at boundary crossings. */
+  /** Wall-clock finalization */
   private finalizeAll(): void {
     const nowMs = Date.now();
     for (const key of this.candles.keys()) {
@@ -371,7 +411,6 @@ export class MarketEngine {
         this.dirtySymbols.add(symbol);
         this.scheduleEmit();
       }
-      void INTERVAL_MS[interval];
     }
   }
 
@@ -387,8 +426,8 @@ export class MarketEngine {
 
   private emit(): void {
     const symbols: Record<string, SymbolSnapshot> = {};
-    const candleKeys = this.dirtyCandles.size > 0 ? this.dirtyCandles : null;
 
+    // Always include all symbols in the snapshot
     for (const symbol of EXCHANGE_SYMBOLS) {
       const stat = this.stats.get(symbol) ?? null;
       const price = this.lastTick.get(symbol) ?? stat?.price ?? 0;
@@ -406,11 +445,26 @@ export class MarketEngine {
       };
     }
 
+    // Include candle data: either dirty keys or all keys on full refresh
     const candlesOut: Record<string, Candle[]> = {};
-    for (const key of candleKeys ?? []) {
-      const [symbol, interval] = key.split("|") as [string, Interval];
-      candlesOut[key] = this.candles.getStore(symbol, interval).all();
+    if (this.allDirty) {
+      // Send ALL candle data
+      for (const key of this.candles.keys()) {
+        const [symbol, interval] = key.split("|") as [string, Interval];
+        candlesOut[key] = this.candles.getStore(symbol, interval).all();
+      }
+    } else {
+      // Send only dirty candle data
+      for (const key of this.dirtyCandles) {
+        const [symbol, interval] = key.split("|") as [string, Interval];
+        candlesOut[key] = this.candles.getStore(symbol, interval).all();
+      }
     }
+
+    // Update diagnostics
+    this.diag.symbolsWithData = Object.values(symbols).filter(s => s.price > 0).length;
+    const latestEvent = Math.max(0, ...Array.from(this.lastEvent.values()));
+    this.diag.lastWsMessageAge = Date.now() - latestEvent;
 
     const snapshot: EngineSnapshot = {
       symbols,
@@ -422,18 +476,19 @@ export class MarketEngine {
       activeProvider: this.failover.activeName(),
       feedHealth: this.primaryHealth(),
       lastUpdate: Date.now(),
+      diagnosticsDetail: { ...this.diag },
     };
 
     for (const fn of this.listeners) fn(snapshot);
     this.dirtySymbols.clear();
     this.dirtyCandles.clear();
+    this.allDirty = false;
   }
 
   private primaryHealth(): FeedHealth {
     const d = this.binance.diagnostics;
     if (d.streamHealth === "connected") return "connected";
     if (this.bybit.diagnostics.streamHealth === "connected") return "connected";
-    // If either has received data recently, consider connected
     const anyRecentTick = Array.from(this.lastEvent.values()).some(t => Date.now() - t < 15_000);
     if (anyRecentTick) return "connected";
     return d.streamHealth === "error" || d.streamHealth === "connecting"
@@ -448,6 +503,10 @@ export class MarketEngine {
 
   getCandles(symbol: string, interval: Interval): Candle[] {
     return this.candles.getStore(symbol, interval).all();
+  }
+
+  getDiagnostics(): EngineDiagnosticsDetail {
+    return { ...this.diag };
   }
 }
 

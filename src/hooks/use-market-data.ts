@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { marketEngine, type EngineSnapshot } from "@/lib/market/engine";
+import { marketEngine, type EngineSnapshot, type EngineDiagnosticsDetail } from "@/lib/market/engine";
 import { PAIRS, displayName } from "@/lib/market/symbols";
 import type { Candle, FeedHealth, Interval } from "@/lib/market/types";
 
@@ -38,6 +38,7 @@ interface UseMarketDataReturn {
   selectedInterval: Interval;
   setInterval: (interval: Interval) => void;
   tickAgeMs: number;
+  diagnosticsDetail: EngineDiagnosticsDetail;
 }
 
 const DEFAULT_INTERVAL: Interval = "1m";
