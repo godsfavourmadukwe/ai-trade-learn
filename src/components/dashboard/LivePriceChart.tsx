@@ -1,9 +1,10 @@
 import { useEffect, useRef, memo } from "react";
 import { cn } from "@/lib/utils";
+import { buildPricePoints, getDerivedPrice, type CandlePoint } from "./live-price-utils";
 
 interface LivePriceChartProps {
   /** Historical candles driving the chart; replaced on every engine emission. */
-  candles: { time: number; close: number; volume: number }[];
+  candles: CandlePoint[];
   symbol: string;
   color?: "green" | "red" | "blue" | "violet";
   height?: number;
@@ -241,19 +242,7 @@ function LivePriceChartInner({
   // This is driven by the engine snapshot, so it updates exactly when the
   // market produces new data — no polling timer, no stale priceHistory prop.
   useEffect(() => {
-    if (candles.length === 0) {
-      priceDataRef.current = [];
-      return;
-    }
-    const pts: PricePoint[] = candles.map((c) => ({ time: c.time, price: c.close }));
-    // If currentPrice is supplied, anchor the live endpoint to it.
-    if (Number.isFinite(currentPrice) && currentPrice > 0) {
-      const last = pts[pts.length - 1];
-      if (!last || last.price !== currentPrice) {
-        pts.push({ time: Date.now(), price: currentPrice });
-      }
-    }
-    priceDataRef.current = pts;
+    priceDataRef.current = buildPricePoints(candles, currentPrice ?? 0);
   }, [candles, currentPrice]);
 
   // Render loop — one draw pass per new candle (no polling).
@@ -261,16 +250,13 @@ function LivePriceChartInner({
     const canvas = canvasRef.current;
     if (!canvas || priceDataRef.current.length < 2) return;
 
-    const displayPrice = currentPrice && Number.isFinite(currentPrice) && currentPrice > 0
-      ? currentPrice
-      : priceDataRef.current[priceDataRef.current.length - 1].price;
-    drawChart(canvas, priceDataRef.current, displayPrice, color, showVolume, showLabels, showGrid, showGradient);
+    const displayPrice = getDerivedPrice(candles, currentPrice ?? 0);
+    const lastPoint = priceDataRef.current[priceDataRef.current.length - 1];
+    const finalDisplayPrice = displayPrice ?? lastPoint?.price ?? 0;
+    drawChart(canvas, priceDataRef.current, finalDisplayPrice, color, showVolume, showLabels, showGrid, showGradient);
   }, [candles, currentPrice]);
 
-  const derivedPrice =
-    currentPrice && Number.isFinite(currentPrice) && currentPrice > 0
-      ? currentPrice
-      : priceDataRef.current[priceDataRef.current.length - 1]?.price ?? 0;
+  const derivedPrice = getDerivedPrice(candles, currentPrice ?? 0);
 
   return (
     <div className={cn("relative", className)}>
