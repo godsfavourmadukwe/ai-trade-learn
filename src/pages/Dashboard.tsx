@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
 import { useNavigate } from "react-router";
 import { useMarketData } from "@/hooks/use-market-data";
+import { usePairSearch } from "@/hooks/use-pair-search";
+import { PairSearchPanel } from "@/components/dashboard/PairSearchPanel";
 import type { Interval } from "@/lib/market/types";
 import { ALL_INTERVALS } from "@/lib/market/types";
 import { useAISignals } from "@/hooks/use-ai-signals";
@@ -144,6 +146,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("markets");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPair, setSelectedPair] = useState<string>("BTC/USDT");
+  const pairSearch = usePairSearch();
   const aiLastAnalyzedRef = useRef(0);
 
   useEffect(() => {
@@ -279,6 +282,10 @@ export default function Dashboard() {
             <TabsTrigger value="signals" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500/30 data-[state=active]:to-orange-500/30 data-[state=active]:text-white font-semibold">
               <Sparkles className="w-4 h-4 mr-2" />
               AI Signals
+            </TabsTrigger>
+            <TabsTrigger value="pairsearch" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-fuchsia-500/30 data-[state=active]:to-violet-500/30 data-[state=active]:text-white font-semibold">
+              <Search className="w-4 h-4 mr-2" />
+              Pair Search
             </TabsTrigger>
             <TabsTrigger value="arena" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500/30 data-[state=active]:to-red-500/30 data-[state=active]:text-white font-semibold">
               <Swords className="w-4 h-4 mr-2" />
@@ -863,6 +870,11 @@ export default function Dashboard() {
                 </Card>
               </div>
             </div>
+          </TabsContent>
+
+          {/* Universal Pair Search & Analysis Tab (registry-backed) */}
+          <TabsContent value="pairsearch" className="space-y-6">
+            <PairSearchPanel ps={pairSearch} />
           </TabsContent>
 
           {/* AI Trade Arena Tab */}
