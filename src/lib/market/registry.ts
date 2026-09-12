@@ -266,7 +266,7 @@ export async function fetchTickerIndex(): Promise<Map<string, TickerRow>> {
   return tickerIndexInFlight;
 }
 
-let batchedTickerCache: { map: Map<string, TickerRow>; expires: number } | null = null;
+let batchedTickerCache: { key: string; map: Map<string, TickerRow>; expires: number } | null = null;
 let batchedTickerInFlight: Promise<Map<string, TickerRow>> | null = null;
 
 /**
@@ -313,28 +313,6 @@ function toTickerRow(t: RawTicker24h, now: number): TickerRow | null {
     open24h: parseFloat(t.openPrice) || price,
     fetchedAt: now,
   };
-}
-
-/** Full 24h ticker index for every exchange pair (cached 60s). */
-export async function fetchTickerIndex(): Promise<Map<string, TickerRow>> {
-  if (tickerIndexCache && Date.now() < tickerIndexCache.expires) return tickerIndexCache.map;
-  if (!tickerIndexInFlight) {
-    const now = Date.now();
-    tickerIndexInFlight = fetchJson<RawTicker24h[]>("/api/v3/ticker/24hr", 15_000)
-      .then((rows) => {
-        const map = new Map<string, TickerRow>();
-        for (const r of rows) {
-          const row = toTickerRow(r, now);
-          if (row) map.set(row.symbol, row);
-        }
-        tickerIndexCache = { map, expires: Date.now() + 60_000 };
-        return map;
-      })
-      .finally(() => {
-        tickerIndexInFlight = null;
-      });
-  }
-  return tickerIndexInFlight;
 }
 
 const singleTickerCache = new Map<string, TickerRow>();
