@@ -28,3 +28,24 @@ export type {
   FusionDecision,
   DecisionLogEntry,
 } from "./modules";
+
+// Market Regime Intelligence
+export {
+  RegimeIntelligenceEngine,
+  regimeIntelEngine,
+} from "./regime-intel";
+export type {
+  ExtendedRegime,
+  RegimeConfidence,
+  RegimeFeatures,
+  RegimeIntelligence,
+  RegimeTransition,
+  StrategyAdjustments,
+  RegimeIntelConfig,
+  RegimeHistoryEntry,
+} from "./regime-intel/types";
+export { EXTENDED_TO_BASE_REGIME } from "./regime-intel/types";
+export { extractRegimeFeatures } from "./regime-intel/features";
+export { classifyRegime, classifyRegimeMTF } from "./regime-intel/classifier";
+export { RegimeTransitionDetector } from "./regime-intel/transitions";
+export { computeStrategyAdjustments, getRegimeSuitabilityScore } from "./regime-intel/strategy-filter";

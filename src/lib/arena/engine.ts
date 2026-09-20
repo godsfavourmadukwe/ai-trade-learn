@@ -19,6 +19,7 @@ import {
 } from "./conditions";
 import { decisionFusionEngine } from "./fusion";
 import { decisionLogger } from "./decision-logger";
+import { regimeIntelEngine, type RegimeIntelligence } from "./regime-intel";
 import type { ModuleInput } from "./modules";
 import type {
   ArenaDataHealth,
@@ -155,6 +156,9 @@ export class ArenaEngine {
   // Market feature cache (updated per tick)
   private featureCache = new Map<string, MarketFeatures>();
 
+  // Regime intelligence cache
+  private regimeIntelCache = new Map<string, RegimeIntelligence>();
+
   constructor(config?: Partial<ArenaEngineConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.capital = this.config.initialCapital;
@@ -205,7 +209,10 @@ export class ArenaEngine {
       this.updateFeatures(symbol.exchange, snap);
     }
 
-    // 3. Evaluate signals for each symbol
+    // 3. Update regime intelligence for each symbol
+    this.updateRegimeIntelligence(snap);
+
+    // 4. Evaluate signals for each symbol
     for (const symbol of PAIRS) {
       this.evaluateSymbol(symbol.exchange, snap);
     }
@@ -434,7 +441,40 @@ export class ArenaEngine {
     return Math.max(1, 1 + vol * 1000);
   }
 
-  // ── Regime classification ──────────────────────────────
+  // ── Regime intelligence update ─────────────────────────
+
+  private updateRegimeIntelligence(snap: EngineSnapshot): void {
+    for (const symbol of PAIRS) {
+      const exchangeSymbol = symbol.exchange;
+      const snapshot = snap.symbols[exchangeSymbol];
+      if (!snapshot || snapshot.price <= 0) continue;
+
+      const candles15m = marketEngine.getCandles(exchangeSymbol, "15m");
+      const candles1h = marketEngine.getCandles(exchangeSymbol, "1h");
+      const priceHistory = this.priceHistory.get(exchangeSymbol) ?? [];
+
+      const intel = regimeIntelEngine.analyze(
+        symbol.symbol,
+        candles15m,
+        candles1h,
+        snapshot.price,
+        priceHistory,
+        Date.now(),
+      );
+
+      if (intel) {
+        this.regimeIntelCache.set(exchangeSymbol, intel);
+
+        // Update the feature cache regime from regime intel
+        const features = this.featureCache.get(exchangeSymbol);
+        if (features) {
+          features.regime = intel.baseRegime;
+        }
+      }
+    }
+  }
+
+  // ── Legacy regime classification (kept for backward compat) ──
 
   private classifyRegime(
     ema20: number, ema50: number, ema200: number,
@@ -513,6 +553,23 @@ export class ArenaEngine {
       exchange: exchangeSymbol,
     });
 
+    // ── Gate 1.5: Regime Intelligence ──
+    const regimeIntel = this.regimeIntelCache.get(exchangeSymbol);
+    if (regimeIntel) {
+      // Check if regime allows this side
+      if (side === "long" && regimeIntel.strategyAdjustments.avoidLongs) return null;
+      if (side === "short" && regimeIntel.strategyAdjustments.avoidShorts) return null;
+
+      // Check regime suitability
+      if (!regimeIntel.suitableForTrading && regimeIntel.confidence.overall > 0.5) {
+        return null;
+      }
+
+      // Check max positions in current regime
+      const currentOpen = this.trades.filter(t => t.status === "open").length;
+      if (currentOpen >= regimeIntel.strategyAdjustments.maxPositions) return null;
+    }
+
     // ── Build ModuleInput for the fusion engine ──
     const moduleInput: ModuleInput = {
       symbol: arenaSymbol,
@@ -561,20 +618,31 @@ export class ArenaEngine {
     if (f.spreadBps > this.config.maxSpreadBps) return null;
     if (f.volatility > 0.05) return null;
 
+    // ── Apply regime intelligence adjustments ──
+    const regimeAdjustments = regimeIntel?.strategyAdjustments;
+    const adjustedConfidenceThreshold = this.adaptiveConfidenceThreshold +
+      (regimeAdjustments?.additionalConfidenceRequired ?? 0);
+    const adjustedPositionSizeMultiplier = regimeAdjustments?.positionSizeMultiplier ?? 1.0;
+    const adjustedStopLossMultiplier = regimeAdjustments?.stopLossMultiplier ?? 1.0;
+    const adjustedTakeProfitMultiplier = regimeAdjustments?.takeProfitMultiplier ?? 1.0;
+
     // ── Use fusion engine's probability and EV ──
     const modelProbability = fusionResult.modelProbability;
     const expectedValue = fusionResult.expectedValue;
 
-    // ── Compute stop loss and take profit ──
+    // ── Compute stop loss and take profit with regime adjustments ──
     const atrForRisk = f.atr > 0 ? f.atr : price * 0.01;
-    const stopDistance = atrForRisk * 2;
-    const targetDistance = atrForRisk * 4;
+    const stopDistance = atrForRisk * 2 * adjustedStopLossMultiplier;
+    const targetDistance = atrForRisk * 4 * adjustedTakeProfitMultiplier;
 
     const stopLoss = side === "long" ? price - stopDistance : price + stopDistance;
     const takeProfit = side === "long" ? price + targetDistance : price - targetDistance;
 
-    // ── Position sizing (risk-based) ──
-    const riskAmount = this.capital * this.config.riskPerTrade;
+    // ── Position sizing (risk-based) with regime adjustment ──
+    let riskAmount = this.capital * this.config.riskPerTrade * adjustedPositionSizeMultiplier;
+    if (regimeAdjustments?.tightenRisk) {
+      riskAmount *= 0.7; // Tighten risk in unstable regimes
+    }
     const riskPerUnit = Math.abs(price - stopLoss);
     if (riskPerUnit <= 0) return null;
 
@@ -582,7 +650,7 @@ export class ArenaEngine {
     const positionValue = positionSize * price;
 
     // ── Final risk gates ──
-    if (modelProbability < this.adaptiveConfidenceThreshold) return null;
+    if (modelProbability < adjustedConfidenceThreshold) return null;
     if (expectedValue < this.config.minExpectedValue) return null;
     const riskReward = riskPerUnit > 0 ? targetDistance / riskPerUnit : 0;
     if (riskReward < this.adaptiveMinRR) return null;
@@ -592,6 +660,9 @@ export class ArenaEngine {
     const signalId = `sig_${Date.now()}_${this.signalCounter}`;
 
     const evidence: ArenaSignalEvidence = decisionFusionEngine.toSignalEvidence(fusionResult);
+
+    // Build summary with regime context
+    const regimeContext = regimeIntel ? ` Regime: ${regimeIntel.regime.replace(/_/g, " ")}. Confidence: ${(regimeIntel.confidence.overall * 100).toFixed(0)}%.` : "";
 
     const signal: ArenaSignal = {
       signalId,
@@ -618,7 +689,7 @@ export class ArenaEngine {
       signalTime: Date.now(),
       evidence,
       reasonCodes: fusionResult.reasonCodes,
-      summary: fusionResult.summary + ` Entry ${formatPrice(price)}, SL ${formatPrice(stopLoss)}, TP ${formatPrice(takeProfit)}. R:R 1:${riskReward.toFixed(2)}.`,
+      summary: fusionResult.summary + regimeContext + ` Entry ${formatPrice(price)}, SL ${formatPrice(stopLoss)}, TP ${formatPrice(takeProfit)}. R:R 1:${riskReward.toFixed(2)}.`,
       status: "pending",
       uncertainty: fusionResult.uncertainty,
       dataHealthAtSignal: health,
@@ -985,6 +1056,12 @@ export class ArenaEngine {
   getModelVersion(): string { return this.modelVersion; }
   getAdaptiveThresholds(): { confidence: number; minRR: number } {
     return { confidence: this.adaptiveConfidenceThreshold, minRR: this.adaptiveMinRR };
+  }
+  getRegimeIntel(exchangeSymbol: string): RegimeIntelligence | null {
+    return this.regimeIntelCache.get(exchangeSymbol) ?? null;
+  }
+  getAllRegimeIntel(): Map<string, RegimeIntelligence> {
+    return new Map(this.regimeIntelCache);
   }
 }
 
