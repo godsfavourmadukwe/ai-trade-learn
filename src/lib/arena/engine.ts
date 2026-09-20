@@ -17,6 +17,9 @@ import {
   computeDataHealth,
   type ReadinessContext,
 } from "./conditions";
+import { decisionFusionEngine } from "./fusion";
+import { decisionLogger } from "./decision-logger";
+import type { ModuleInput } from "./modules";
 import type {
   ArenaDataHealth,
   ArenaInstrument,
@@ -510,36 +513,57 @@ export class ArenaEngine {
       exchange: exchangeSymbol,
     });
 
-    // ── Gate 2: Regime filter ──
-    const regime = f.regime;
-    if (regime === "ranging" || regime === "unknown" || regime === "low_volatility") return null;
+    // ── Build ModuleInput for the fusion engine ──
+    const moduleInput: ModuleInput = {
+      symbol: arenaSymbol,
+      exchangeSymbol,
+      side,
+      candles15m: marketEngine.getCandles(exchangeSymbol, "15m"),
+      candles1h: marketEngine.getCandles(exchangeSymbol, "1h"),
+      candles4h: marketEngine.getCandles(exchangeSymbol, "4h"),
+      livePrice: price,
+      ticker: symSnap ? {
+        price: symSnap.price,
+        change24hPercent: symSnap.change24hPercent,
+        high24h: symSnap.high24h,
+        low24h: symSnap.low24h,
+        volume24hBase: 0,
+        quoteVolume24h: symSnap.volume24h,
+        open24h: symSnap.open24h,
+      } : null,
+      orderBook: null,
+      priceHistory: this.priceHistory.get(exchangeSymbol) ?? [],
+      volumeHistory: this.volumeHistory.get(exchangeSymbol) ?? [],
+      now: Date.now(),
+    };
 
-    // ── Gate 3: Trend alignment ──
-    const trendAligned = side === "long"
-      ? f.ema50 > f.ema200 && f.price > f.ema50
-      : f.ema50 < f.ema200 && f.price < f.ema50;
-    if (!trendAligned) return null;
+    // ── Run the Decision Fusion Engine ──
+    const fusionResult = decisionFusionEngine.evaluate(moduleInput);
 
-    // ── Gate 4: Breakout confirmation ──
-    const breakoutConfirmed = side === "long"
-      ? price > f.breakoutHigh * 0.998 // close to or above Donchian high
-      : price < f.breakoutLow * 1.002;
-    if (!breakoutConfirmed) return null;
+    // ── Log every decision ──
+    decisionLogger.logDecision({
+      symbol: arenaSymbol,
+      side,
+      fusionResult,
+      price,
+      change24h: symSnap?.change24hPercent ?? 0,
+      high24h: symSnap?.high24h ?? 0,
+      low24h: symSnap?.low24h ?? 0,
+      volume24h: symSnap?.volume24h ?? 0,
+      regime: f.regime,
+      tradeId: null,
+    });
 
-    // ── Gate 5: Momentum (RSI) ──
-    const rsiOk = side === "long"
-      ? f.rsi > 50 && f.rsi < 75
-      : f.rsi < 50 && f.rsi > 25;
-    if (!rsiOk) return null;
+    // ── If fusion says NO_TRADE, stop here ──
+    if (fusionResult.decision === "NO_TRADE") return null;
 
-    // ── Gate 6: Volume confirmation ──
-    if (f.volumeRatio < 1.0) return null;
-
-    // ── Gate 7: Volatility not extreme ──
+    // ── Secondary risk gates (defense in depth) ──
+    if (f.spreadBps > this.config.maxSpreadBps) return null;
     if (f.volatility > 0.05) return null;
 
-    // ── Gate 8: Spread acceptable ──
-    if (f.spreadBps > this.config.maxSpreadBps) return null;
+    // ── Use fusion engine's probability and EV ──
+    const modelProbability = fusionResult.modelProbability;
+    const expectedValue = fusionResult.expectedValue;
 
     // ── Compute stop loss and take profit ──
     const atrForRisk = f.atr > 0 ? f.atr : price * 0.01;
@@ -557,92 +581,24 @@ export class ArenaEngine {
     const positionSize = riskAmount / riskPerUnit;
     const positionValue = positionSize * price;
 
-    // ── Model probability estimation (quantitative, not LLM) ──
-    const modelProbability = this.estimateProbability(f, side);
-    const expectedReturn = modelProbability * (targetDistance / price) - (1 - modelProbability) * (stopDistance / price);
-    const feesCost = (this.config.feesBps + this.config.slippageBps) / 10_000;
-    const expectedValue = expectedReturn - feesCost;
-
-    const riskReward = riskPerUnit > 0 ? targetDistance / riskPerUnit : 0;
-
-    // ── Final gates ──
+    // ── Final risk gates ──
     if (modelProbability < this.adaptiveConfidenceThreshold) return null;
     if (expectedValue < this.config.minExpectedValue) return null;
+    const riskReward = riskPerUnit > 0 ? targetDistance / riskPerUnit : 0;
     if (riskReward < this.adaptiveMinRR) return null;
 
     // ── Build signal ──
     this.signalCounter++;
     const signalId = `sig_${Date.now()}_${this.signalCounter}`;
 
-    const evidence: ArenaSignalEvidence = {
-      trend: {
-        label: "EMA Alignment",
-        value: `EMA50(${f.ema50.toFixed(0)}) ${side === "long" ? ">" : "<"} EMA200(${f.ema200.toFixed(0)})`,
-        detail: `Price ${side === "long" ? "above" : "below"} EMA50. ${side === "long" ? "Bullish" : "Bearish"} trend confirmed.`,
-        source: "ema_computation",
-      },
-      momentum: {
-        label: "RSI Momentum",
-        value: `RSI=${f.rsi.toFixed(1)}`,
-        detail: `RSI in ${side === "long" ? "bullish" : "bearish"} range. Momentum ${side === "long" ? "expanding" : "contracting"}.`,
-        source: "rsi_computation",
-      },
-      volatility: {
-        label: "ATR Volatility",
-        value: `ATR=${f.atr.toFixed(2)} (${((f.atr / price) * 100).toFixed(2)}%)`,
-        detail: "Volatility within acceptable range for trend trading.",
-        source: "atr_computation",
-      },
-      volume: {
-        label: "Volume Ratio",
-        value: `${f.volumeRatio.toFixed(2)}x average`,
-        detail: `Volume ${f.volumeRatio > 1.2 ? "significantly above" : "at"} average — confirms ${side === "long" ? "buying" : "selling"} pressure.`,
-        source: "volume_analysis",
-      },
-      liquidity: {
-        label: "Liquidity",
-        value: `${(symSnap?.volume24h ?? 0) > 0 ? ((symSnap?.volume24h ?? 0) / 1e9).toFixed(2) + "B" : "N/A"}`,
-        detail: "24h quote volume sufficient for execution.",
-        source: "exchange_ticker",
-      },
-      regime: {
-        label: "Market Regime",
-        value: regime,
-        detail: `Trend strength: ${(f.trendStrength * 100).toFixed(0)}%. Regime supports ${side} trades.`,
-        source: "regime_classifier",
-      },
-      model: {
-        label: "Model Probability",
-        value: `${(modelProbability * 100).toFixed(1)}%`,
-        detail: `Estimated probability TP is reached before SL. Confidence: ${(modelProbability * 100).toFixed(1)}%.`,
-        source: "quantitative_model",
-      },
-      expectedValue: {
-        label: "Expected Value",
-        value: `${(expectedValue * 100).toFixed(2)}%`,
-        detail: `After fees: ${(feesCost * 100).toFixed(2)}%. Positive EV confirmed.`,
-        source: "ev_calculation",
-      },
-      riskReward: {
-        label: "Risk/Reward",
-        value: `1:${riskReward.toFixed(2)}`,
-        detail: `Stop: ${formatPrice(stopLoss)} → Target: ${formatPrice(takeProfit)}`,
-        source: "atr_based_levels",
-      },
-      uncertainty: {
-        label: "Model Uncertainty",
-        value: `${(this.computeUncertainty(f) * 100).toFixed(1)}%`,
-        detail: "Uncertainty within acceptable bounds.",
-        source: "uncertainty_estimator",
-      },
-    };
+    const evidence: ArenaSignalEvidence = decisionFusionEngine.toSignalEvidence(fusionResult);
 
     const signal: ArenaSignal = {
       signalId,
       symbol: arenaSymbol,
       exchange: "binance",
       side,
-      strategy: "breakout_momentum_v1",
+      strategy: "fusion_engine_v1",
       timeframe: "15m",
       higherTimeframe: "1h",
       entry: price,
@@ -652,26 +608,19 @@ export class ArenaEngine {
       positionSize,
       risk: riskAmount,
       modelProbability,
-      expectedReturn,
+      expectedReturn: expectedValue + (this.config.feesBps + this.config.slippageBps) / 10_000,
       expectedValue,
       expectedAdverseExcursion: stopDistance * 0.8,
       expectedFavorableExcursion: targetDistance * 0.6,
-      marketRegime: regime,
+      marketRegime: f.regime,
       modelVersion: this.modelVersion,
       featuresVersion: this.featuresVersion,
       signalTime: Date.now(),
       evidence,
-      reasonCodes: [
-        "trend_aligned",
-        "breakout_confirmed",
-        "momentum_ok",
-        "volume_confirmed",
-        "risk_reward_acceptable",
-        "positive_ev",
-      ],
-      summary: `${side.toUpperCase()} ${arenaSymbol}: Breakout with momentum in ${regime} regime. Entry ${formatPrice(price)}, SL ${formatPrice(stopLoss)}, TP ${formatPrice(takeProfit)}. R:R 1:${riskReward.toFixed(2)}. Model probability ${(modelProbability * 100).toFixed(1)}%.`,
+      reasonCodes: fusionResult.reasonCodes,
+      summary: fusionResult.summary + ` Entry ${formatPrice(price)}, SL ${formatPrice(stopLoss)}, TP ${formatPrice(takeProfit)}. R:R 1:${riskReward.toFixed(2)}.`,
       status: "pending",
-      uncertainty: this.computeUncertainty(f),
+      uncertainty: fusionResult.uncertainty,
       dataHealthAtSignal: health,
     };
 
