@@ -63,12 +63,13 @@ function generateCandles(
     const volume = 1000 + Math.random() * 2000;
 
     candles.push({
-      timestamp: baseTime + i * 15 * 60 * 1000,
+      time: baseTime + i * 15 * 60 * 1000,
       open,
       high,
       low,
       close,
       volume,
+      closed: true,
     });
 
     price = close;
