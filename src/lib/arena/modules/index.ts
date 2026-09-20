@@ -24,6 +24,7 @@ export { volumeModule } from "./volume";
 export { orderFlowModule } from "./orderflow";
 export { mlPredictorModule } from "./ml-predictor";
 export { contextModule } from "./context";
+export { crossMarketModule } from "./cross-market-module";
 
 import type { AnalysisModule } from "./types";
 import { technicalModule } from "./technical";
@@ -34,6 +35,7 @@ import { volumeModule } from "./volume";
 import { orderFlowModule } from "./orderflow";
 import { mlPredictorModule } from "./ml-predictor";
 import { contextModule } from "./context";
+import { crossMarketModule } from "./cross-market-module";
 
 /** All registered analysis modules in evaluation order. */
 export const ALL_MODULES: AnalysisModule[] = [
@@ -45,4 +47,5 @@ export const ALL_MODULES: AnalysisModule[] = [
   orderFlowModule,    // Order book signals
   mlPredictorModule,  // Quantitative ensemble prediction
   contextModule,      // Broader market context
+  crossMarketModule,  // Cross-market intelligence (confirm/contradict/neutral)
 ];

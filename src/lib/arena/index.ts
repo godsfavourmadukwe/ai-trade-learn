@@ -49,3 +49,33 @@ export { extractRegimeFeatures } from "./regime-intel/features";
 export { classifyRegime, classifyRegimeMTF } from "./regime-intel/classifier";
 export { RegimeTransitionDetector } from "./regime-intel/transitions";
 export { computeStrategyAdjustments, getRegimeSuitabilityScore } from "./regime-intel/strategy-filter";
+
+// Cross-Market Intelligence
+export {
+  precomputeCrossMarketContext,
+  getCachedCrossMarketContext,
+  pruneCrossMarketCache,
+  resetCrossMarketCache,
+  selectUniverseCandidates,
+} from "./cross-market";
+export { CrossMarketUniverseService, crossMarketUniverseService } from "./cross-market/universe";
+export { computeCrossMarketContext, pearsonCorrelation } from "./cross-market/engine";
+export type {
+  CrossMarketContext,
+  CrossMarketVerdict,
+  CrossMarketFactor,
+  CrossMarketInput,
+  RelatedMarket,
+  MarketBreadth,
+  MarketVolatilityState,
+  FactorLean,
+  CorrelationStrength,
+} from "./cross-market/types";
+export type {
+  CrossMarketEngineConfig,
+} from "./cross-market/engine";
+export type {
+  UniverseConfig,
+  CrossMarketSnapshot,
+} from "./cross-market/universe";
+export type { UniversePairInfo } from "./cross-market";

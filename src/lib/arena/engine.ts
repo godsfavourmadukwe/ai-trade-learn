@@ -20,6 +20,11 @@ import {
 import { decisionFusionEngine } from "./fusion";
 import { decisionLogger } from "./decision-logger";
 import { regimeIntelEngine, type RegimeIntelligence } from "./regime-intel";
+import {
+  precomputeCrossMarketContext,
+  pruneCrossMarketCache,
+  type UniversePairInfo,
+} from "./cross-market";
 import type { ModuleInput } from "./modules";
 import type {
   ArenaDataHealth,
@@ -159,6 +164,10 @@ export class ArenaEngine {
   // Regime intelligence cache
   private regimeIntelCache = new Map<string, RegimeIntelligence>();
 
+  // Cross-market precompute pacing (avoid blocking the snapshot loop)
+  private lastCrossMarketRefresh = 0;
+  private crossMarketInFlight = false;
+
   constructor(config?: Partial<ArenaEngineConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.capital = this.config.initialCapital;
@@ -211,6 +220,9 @@ export class ArenaEngine {
 
     // 3. Update regime intelligence for each symbol
     this.updateRegimeIntelligence(snap);
+
+    // 3.5 Update cross-market intelligence (async, paced, non-blocking)
+    this.maybeUpdateCrossMarketIntelligence();
 
     // 4. Evaluate signals for each symbol
     for (const symbol of PAIRS) {
@@ -472,6 +484,56 @@ export class ArenaEngine {
         }
       }
     }
+  }
+
+  // ── Cross-market intelligence refresh ─────────────────
+
+  /**
+   * Paced async precompute of cross-market contexts. Runs at most
+   * once per 60s and never twice concurrently. Failures are silent:
+   * the fusion pipeline treats missing context as neutral.
+   */
+  private maybeUpdateCrossMarketIntelligence(): void {
+    const now = Date.now();
+    if (now - this.lastCrossMarketRefresh < 60_000) return;
+    if (this.crossMarketInFlight) return;
+    this.crossMarketInFlight = true;
+    this.lastCrossMarketRefresh = now;
+
+    void (async () => {
+      try {
+        // Seed universe info from the static PAIRS list (extended
+        // dynamically by the orchestrator's volume learning).
+        const registryPairs: UniversePairInfo[] = PAIRS.map((p) => ({
+          exchangeSymbol: p.exchange,
+          symbol: p.symbol,
+          baseAsset: p.symbol.split("/")[0] ?? p.exchange,
+          quoteAsset: p.symbol.split("/")[1] ?? "USDT",
+        }));
+
+        for (const pair of PAIRS) {
+          const features = this.featureCache.get(pair.exchange);
+          const targetVol = features?.volatility ?? 0;
+          for (const side of ["long", "short"] as const) {
+            await precomputeCrossMarketContext(
+              pair.exchange,
+              pair.symbol,
+              side,
+              registryPairs,
+              targetVol,
+              now,
+            );
+          }
+        }
+        pruneCrossMarketCache();
+      } catch {
+        // Never break the arena loop on cross-market failures
+      } finally {
+        this.crossMarketInFlight = false;
+        this.lastCrossMarketRefresh = Date.now();
+        // Fixed pacing — not interval-based, so no timer leak on stop().
+      }
+    })();
   }
 
   // ── Legacy regime classification (kept for backward compat) ──
