@@ -24,6 +24,7 @@ import { SignalList } from "@/components/dashboard/SignalList";
 import { StrategyConfig } from "@/components/dashboard/StrategyConfig";
 import { RiskPanel } from "@/components/dashboard/RiskPanel";
 import { SettingsTab } from "@/components/dashboard/SettingsTab";
+import { StockMarketPage } from "@/components/stocks/StockMarketPage";
 import { 
   LogOut, 
   TrendingUp, 
@@ -44,7 +45,8 @@ import {
   Star,
   Sparkles,
   Clock,
-  Swords
+  Swords,
+  LineChart
 } from "lucide-react";
 
 // Demo data for visualization
@@ -271,6 +273,10 @@ export default function Dashboard() {
               <Globe className="w-4 h-4 mr-2" />
               Markets
             </TabsTrigger>
+            <TabsTrigger value="stocks" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500/30 data-[state=active]:to-cyan-500/30 data-[state=active]:text-white font-semibold">
+              <LineChart className="w-4 h-4 mr-2" />
+              Stocks
+            </TabsTrigger>
             <TabsTrigger value="overview" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-cyan-500/30 data-[state=active]:to-blue-500/30 data-[state=active]:text-white font-semibold">
               <BarChart3 className="w-4 h-4 mr-2" />
               Dashboard
@@ -300,6 +306,11 @@ export default function Dashboard() {
               Settings
             </TabsTrigger>
           </TabsList>
+
+          {/* Stocks Tab - Stock Market Intelligence */}
+          <TabsContent value="stocks" className="space-y-6">
+            <StockMarketPage />
+          </TabsContent>
 
           {/* Markets Tab - Currency Pair Catalog with Real-Time Data */}
           <TabsContent value="markets" className="space-y-6">
