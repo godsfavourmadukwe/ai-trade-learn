@@ -25,6 +25,7 @@ export { orderFlowModule } from "./orderflow";
 export { mlPredictorModule } from "./ml-predictor";
 export { contextModule } from "./context";
 export { crossMarketModule } from "./cross-market-module";
+export { eventIntelligenceModule } from "../event-intelligence/module";
 
 import type { AnalysisModule } from "./types";
 import { technicalModule } from "./technical";
@@ -36,16 +37,18 @@ import { orderFlowModule } from "./orderflow";
 import { mlPredictorModule } from "./ml-predictor";
 import { contextModule } from "./context";
 import { crossMarketModule } from "./cross-market-module";
+import { eventIntelligenceModule } from "../event-intelligence/module";
 
 /** All registered analysis modules in evaluation order. */
 export const ALL_MODULES: AnalysisModule[] = [
-  regimeModule,       // Gate: is the regime tradeable?
-  technicalModule,    // Core TA indicators
-  momentumModule,     // Momentum and trend strength
-  volatilityModule,   // Volatility regime
-  volumeModule,       // Volume confirmation
-  orderFlowModule,    // Order book signals
-  mlPredictorModule,  // Quantitative ensemble prediction
-  contextModule,      // Broader market context
-  crossMarketModule,  // Cross-market intelligence (confirm/contradict/neutral)
+  regimeModule,           // Gate: is the regime tradeable?
+  technicalModule,        // Core TA indicators
+  momentumModule,         // Momentum and trend strength
+  volatilityModule,       // Volatility regime
+  volumeModule,           // Volume confirmation
+  orderFlowModule,        // Order book signals
+  mlPredictorModule,      // Quantitative ensemble prediction
+  contextModule,          // Broader market context
+  crossMarketModule,      // Cross-market intelligence (confirm/contradict/neutral)
+  eventIntelligenceModule,// Market event intelligence (Feature 5)
 ];

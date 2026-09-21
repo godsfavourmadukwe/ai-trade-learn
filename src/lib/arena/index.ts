@@ -79,3 +79,6 @@ export type {
   CrossMarketSnapshot,
 } from "./cross-market/universe";
 export type { UniversePairInfo } from "./cross-market";
+
+// Event Intelligence (Feature 5)
+export * from "./event-intelligence";
