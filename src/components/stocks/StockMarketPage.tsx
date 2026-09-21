@@ -1,16 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { StockSearch } from "./StockSearch";
-import {
-  fetchStockQuoteAndCandles,
-  extractFundamentals,
-  getDiagnostics,
-  type StockQuote,
-  type FundamentalData,
-} from "@/lib/stocks/data-engine";
+import { extractFundamentals, type FundamentalData } from "@/lib/stocks/data-engine";
+import { useStockStream } from "@/lib/stocks/stream";
+import type { StreamStatus } from "@/lib/stocks/stream";
 import {
   analyzeStock,
   type StockAnalysis,
@@ -226,69 +222,53 @@ function DirectionBadge({ direction, confidence }: { direction: AnalysisDirectio
   );
 }
 
+// ── Stream Status Badge ───────────────────────────────────
+
+const STATUS_META: Record<StreamStatus, { label: string; cls: string; dot: string }> = {
+  live: { label: "LIVE", cls: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10", dot: "bg-emerald-400" },
+  connecting: { label: "CONNECTING", cls: "text-amber-400 border-amber-500/40 bg-amber-500/10", dot: "bg-amber-400" },
+  reconnecting: { label: "RECONNECTING", cls: "text-amber-400 border-amber-500/40 bg-amber-500/10", dot: "bg-amber-400" },
+  stale: { label: "STALE", cls: "text-rose-400 border-rose-500/40 bg-rose-500/10", dot: "bg-rose-400" },
+  "market-closed": { label: "MARKET CLOSED", cls: "text-zinc-400 border-white/10 bg-white/[0.03]", dot: "bg-zinc-500" },
+  error: { label: "ERROR", cls: "text-rose-400 border-rose-500/40 bg-rose-500/10", dot: "bg-rose-400" },
+};
+
+function StreamStatusBadge({ status }: { status: StreamStatus }) {
+  const meta = STATUS_META[status];
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-bold tracking-wide ${meta.cls}`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${meta.dot} ${status === "live" ? "animate-pulse" : ""}`} />
+      {meta.label}
+    </span>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────
 
 export function StockMarketPage() {
   const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
-  const [quote, setQuote] = useState<StockQuote | null>(null);
-  const [candles, setCandles] = useState<Candle[]>([]);
-  const [analysis, setAnalysis] = useState<StockAnalysis | null>(null);
   const [interval, setInterval] = useState<Interval>("1d");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdate, setLastUpdate] = useState<number>(0);
-  const abortRef = useRef<number>(0);
 
-  const loadData = useCallback(async (symbol: string, iv: Interval) => {
-    // Increment request ID to detect stale responses
-    const requestId = ++abortRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      // Quote + candles come from a single Yahoo chart request
-      const { quote: quoteData, candles: candleData } = await fetchStockQuoteAndCandles(
-        symbol,
-        iv,
-        200,
-      );
+  // Live pipeline: REST history builds the chart, Yahoo streamer
+  // WebSocket keeps price/candles updating automatically.
+  const {
+    quote,
+    candles,
+    fundamentals,
+    loading,
+    error,
+    health,
+    refresh: refreshStream,
+  } = useStockStream(selectedSymbol, interval);
 
-      // If a newer request started, discard this result
-      if (requestId !== abortRef.current) return;
+  const analysis = useMemo<StockAnalysis | null>(() => {
+    if (!quote || candles.length < 2) return null;
+    return analyzeStock(quote, candles, fundamentals ?? extractFundamentals(quote));
+  }, [quote, candles, fundamentals]);
 
-      const diag = getDiagnostics();
-
-      if (!quoteData) {
-        // Provide specific diagnostics instead of generic message
-        const diagMsg = diag.consecutiveErrors > 2
-          ? `API connectivity issue (${diag.consecutiveErrors} consecutive failures, avg latency ${Math.round(diag.avgLatencyMs)}ms). `
-          : "";
-        setError(`${diagMsg}Could not load data for "${symbol}". The symbol may be invalid, delisted, or the data service may be temporarily unavailable. Check the browser console for details.`);
-        setLoading(false);
-        return;
-      }
-
-      setQuote(quoteData);
-      setCandles(candleData);
-
-      // Run analysis
-      const fundamentals = extractFundamentals(quoteData);
-      const stockAnalysis = analyzeStock(quoteData, candleData, fundamentals);
-      setAnalysis(stockAnalysis);
-      setLastUpdate(Date.now());
-    } catch (err) {
-      if (requestId !== abortRef.current) return;
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setError(`Failed to load data for "${symbol}": ${msg}`);
-      console.error(`[StockMarketPage] Load error for ${symbol}:`, err);
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    loadData(selectedSymbol, interval);
-  }, [selectedSymbol, interval, loadData]);
-
-  const handleRefresh = () => loadData(selectedSymbol, interval);
+  const handleRefresh = () => refreshStream();
 
   const formatPrice = (p: number) => {
     if (p >= 1000) return `$${p.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -353,6 +333,7 @@ export function StockMarketPage() {
                     <Badge variant="outline" className="text-xs border-white/10 text-zinc-400">
                       {quote.exchange}
                     </Badge>
+                    <StreamStatusBadge status={health?.status ?? "connecting"} />
                   </div>
                   <p className="text-zinc-400 text-sm">{quote.name}</p>
                 </div>
@@ -594,10 +575,14 @@ export function StockMarketPage() {
       )}
 
       {/* Data Status */}
-      {lastUpdate > 0 && (
+      {health && (
         <div className="text-center text-xs text-zinc-600">
-          Data provided by Yahoo Finance. Last update: {new Date(lastUpdate).toLocaleTimeString()} ·
-          Data may be delayed 15+ minutes
+          Data provided by Yahoo Finance · {STATUS_META[health.status].label}
+          {health.lastTickAt > 0 && (
+            <> · Last tick: {new Date(health.lastTickAt).toLocaleTimeString()}</>
+          )}
+          {health.reconnectCount > 0 && <> · Reconnects: {health.reconnectCount}</>}
+          {health.status === "stale" && <> · Attempting recovery…</>}
         </div>
       )}
     </div>

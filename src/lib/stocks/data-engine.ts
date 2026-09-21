@@ -52,6 +52,9 @@ export interface StockQuote {
   exchange: string;
   lastUpdate: number;
   dataStatus: "live" | "delayed" | "unavailable";
+  /** Live bid/ask when the stream provides them (null otherwise). */
+  bid?: number | null;
+  ask?: number | null;
 }
 
 export interface StockSearchResult {
