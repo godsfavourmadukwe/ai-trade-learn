@@ -1,15 +1,15 @@
 // ============================================================
 // STOCK MARKET INTELLIGENCE — Stock Data Engine
 //
-// Professional stock data engine using Yahoo Finance's free
-// API. Provides live prices, historical OHLCV, fundamentals,
-// and stock search. Never fabricates data — if the API is
-// unavailable, it reports the failure clearly.
+// Professional stock data engine using Yahoo Finance API.
+// Uses api.allorigins.win as CORS proxy since Yahoo Finance
+// does not set CORS headers for browser requests.
 //
-// Yahoo Finance endpoints (no API key required):
-//   - Chart data:   /v8/finance/chart/{symbol}
-//   - Search:       /v1/finance/search?q={query}
-//   - Quote:        /v7/finance/quote?symbols={symbols}
+// Provides: live quotes, historical OHLCV, search, fundamentals.
+// NEVER fabricates data — reports failures clearly.
+//
+// Data flow:
+//   Browser → allorigins proxy → Yahoo Finance API → proxy → Browser
 // ============================================================
 
 import type { Interval, Candle } from "@/lib/market/types";
@@ -86,70 +86,118 @@ export interface FundamentalData {
   dataStatus: "available" | "partial" | "unavailable";
 }
 
-// ── Yahoo Finance API Client ──────────────────────────────
+// ── Diagnostics ───────────────────────────────────────────
 
-const YAHOO_BASE = "https://query1.finance.yahoo.com";
-const YAHOO_V8 = `${YAHOO_BASE}/v8/finance/chart`;
-const YAHOO_V7 = `${YAHOO_BASE}/v7/finance/quote`;
-const YAHOO_SEARCH = `${YAHOO_BASE}/v1/finance/search`;
+export interface DataDiagnostics {
+  lastAttempt: number;
+  lastSuccess: number;
+  lastError: string | null;
+  totalRequests: number;
+  totalErrors: number;
+  consecutiveErrors: number;
+  proxyUsed: string;
+  avgLatencyMs: number;
+}
+
+const diagnostics: DataDiagnostics = {
+  lastAttempt: 0,
+  lastSuccess: 0,
+  lastError: null,
+  totalRequests: 0,
+  totalErrors: 0,
+  consecutiveErrors: 0,
+  proxyUsed: "allorigins",
+  avgLatencyMs: 0,
+};
+
+export function getDiagnostics(): DataDiagnostics {
+  return { ...diagnostics };
+}
+
+function recordSuccess(latencyMs: number): void {
+  diagnostics.lastSuccess = Date.now();
+  diagnostics.consecutiveErrors = 0;
+  diagnostics.avgLatencyMs = diagnostics.avgLatencyMs > 0
+    ? (diagnostics.avgLatencyMs + latencyMs) / 2
+    : latencyMs;
+}
+
+function recordError(error: string): void {
+  diagnostics.lastError = error;
+  diagnostics.totalErrors++;
+  diagnostics.consecutiveErrors++;
+}
+
+// ── CORS Proxy Layer ──────────────────────────────────────
+//
+// Yahoo Finance does NOT set CORS headers. Browser fetch() fails
+// with a network error. We use api.allorigins.win which fetches
+// the URL server-side and returns the response body.
+
+const ALLORIGINS_BASE = "https://api.allorigins.win/raw?url=";
 
 // Rate limiting
 const requestTimestamps: number[] = [];
-const MAX_REQUESTS_PER_SECOND = 5;
-const REQUEST_DELAY_MS = 250;
+const MAX_REQUESTS_PER_SECOND = 3;
 
 function rateLimit(): Promise<void> {
   const now = Date.now();
-  // Remove timestamps older than 1 second
   while (requestTimestamps.length > 0 && requestTimestamps[0] < now - 1000) {
     requestTimestamps.shift();
   }
   if (requestTimestamps.length >= MAX_REQUESTS_PER_SECOND) {
-    const waitTime = REQUEST_DELAY_MS;
-    return new Promise((resolve) => setTimeout(resolve, waitTime));
+    return new Promise((resolve) => setTimeout(resolve, 400));
   }
   requestTimestamps.push(now);
   return Promise.resolve();
 }
 
-async function fetchYahoo<T>(url: string): Promise<T | null> {
+/**
+ * Fetch JSON through the CORS proxy. The proxy returns the raw
+ * response body from the target URL.
+ */
+async function fetchViaProxy<T>(targetUrl: string): Promise<T | null> {
   await rateLimit();
+  diagnostics.lastAttempt = Date.now();
+  diagnostics.totalRequests++;
+
+  const proxyUrl = `${ALLORIGINS_BASE}${encodeURIComponent(targetUrl)}`;
+
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const start = Date.now();
 
-    const response = await fetch(url, {
+    const response = await fetch(proxyUrl, {
       signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; TRADSLY/1.0)",
-      },
     });
     clearTimeout(timeout);
 
     if (!response.ok) {
-      console.warn(`[StockDataEngine] Yahoo API error: ${response.status} for ${url}`);
+      const msg = `Proxy HTTP ${response.status}`;
+      recordError(msg);
+      console.warn(`[StockDataEngine] ${msg} for ${targetUrl}`);
       return null;
     }
-    return await response.json() as T;
+
+    const text = await response.text();
+    if (!text || text.length < 2) {
+      recordError("Empty proxy response");
+      return null;
+    }
+
+    const data = JSON.parse(text) as T;
+    recordSuccess(Date.now() - start);
+    return data;
   } catch (err) {
-    console.warn(`[StockDataEngine] Fetch error:`, err);
+    const msg = err instanceof Error ? err.message : String(err);
+    recordError(msg);
+    console.warn(`[StockDataEngine] Fetch error: ${msg}`);
     return null;
   }
 }
 
 // ── Interval Mapping ──────────────────────────────────────
-
-function intervalToYahoo(interval: Interval): string {
-  const map: Record<Interval, string> = {
-    "1m": "1m",
-    "5m": "5m",
-    "15m": "15m",
-    "1h": "1h",
-    "4h": "1d", // Yahoo doesn't have 4h, use daily
-    "1d": "1d",
-  };
-  return map[interval];
-}
 
 function intervalRangeMap(interval: Interval): { range: string; interval: string } {
   const map: Record<Interval, { range: string; interval: string }> = {
@@ -163,22 +211,37 @@ function intervalRangeMap(interval: Interval): { range: string; interval: string
   return map[interval];
 }
 
+// ── Candle Cache ──────────────────────────────────────────
+
+const candleCache = new Map<string, { data: Candle[]; fetchedAt: number }>();
+const CANDLE_CACHE_TTL = 60_000; // 1 minute
+
+function cacheKey(symbol: string, interval: Interval): string {
+  return `${symbol}|${interval}`;
+}
+
 // ── Historical Candles ────────────────────────────────────
 
 /**
  * Fetch historical OHLCV candles for a stock.
  * Returns candles in ascending time order.
- * Never returns fake data — returns empty array on failure.
+ * Uses cache to avoid redundant requests.
  */
 export async function fetchStockCandles(
   symbol: string,
   interval: Interval,
   limit: number = 200,
 ): Promise<Candle[]> {
-  const { range, interval: yfInterval } = intervalRangeMap(interval);
+  const key = cacheKey(symbol, interval);
+  const cached = candleCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < CANDLE_CACHE_TTL) {
+    return cached.data.slice(-limit);
+  }
 
-  const url = `${YAHOO_V8}/${encodeURIComponent(symbol)}?range=${range}&interval=${yfInterval}&includePrePost=false`;
-  const data = await fetchYahoo<YahooChartResponse>(url);
+  const { range, interval: yfInterval } = intervalRangeMap(interval);
+  const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${yfInterval}&includePrePost=false`;
+
+  const data = await fetchViaProxy<YahooChartResponse>(targetUrl);
 
   if (!data?.chart?.result?.[0]) {
     console.warn(`[StockDataEngine] No chart data for ${symbol} ${interval}`);
@@ -201,13 +264,14 @@ export async function fetchStockCandles(
     const c = ohlcv.close?.[i];
     const v = ohlcv.volume?.[i];
 
-    // Skip invalid/missing candles
+    // Validate each candle
     if (o == null || h == null || l == null || c == null || v == null) continue;
+    if (!Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) continue;
     if (o <= 0 || h <= 0 || l <= 0 || c <= 0) continue;
     if (h < l) continue;
 
     candles.push({
-      time: timestamps[i] * 1000, // Convert to ms
+      time: timestamps[i] * 1000,
       open: o,
       high: h,
       low: l,
@@ -220,7 +284,9 @@ export async function fetchStockCandles(
   // Ensure ascending order
   candles.sort((a, b) => a.time - b.time);
 
-  // Return the last `limit` candles
+  // Cache the result
+  candleCache.set(key, { data: candles, fetchedAt: Date.now() });
+
   return candles.slice(-limit);
 }
 
@@ -231,26 +297,59 @@ export async function fetchStockCandles(
  * Returns null on failure — never fabricates data.
  */
 export async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
-  const url = `${YAHOO_V7}?symbols=${encodeURIComponent(symbol)}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,regularMarketPreviousClose,regularMarketVolume,averageDailyVolume3Month,marketCap,trailingPE,epsTrailingTwelveMonths,fiftyTwoWeekHigh,fiftyTwoWeekLow,dividendYield,beta,shortName,longName,sector,industry,currency,fullExchangeName,regularMarketTime`;
+  const fields = [
+    "regularMarketPrice",
+    "regularMarketChange",
+    "regularMarketChangePercent",
+    "regularMarketDayHigh",
+    "regularMarketDayLow",
+    "regularMarketOpen",
+    "regularMarketPreviousClose",
+    "regularMarketVolume",
+    "averageDailyVolume3Month",
+    "marketCap",
+    "trailingPE",
+    "epsTrailingTwelveMonths",
+    "fiftyTwoWeekHigh",
+    "fiftyTwoWeekLow",
+    "dividendYield",
+    "beta",
+    "shortName",
+    "longName",
+    "sector",
+    "industry",
+    "currency",
+    "fullExchangeName",
+    "regularMarketTime",
+  ].join(",");
 
-  const data = await fetchYahoo<YahooQuoteResponse>(url);
+  const targetUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}&fields=${fields}`;
+
+  const data = await fetchViaProxy<YahooQuoteResponse>(targetUrl);
 
   if (!data?.quoteResponse?.result?.[0]) {
+    console.warn(`[StockDataEngine] No quote data for ${symbol}`);
     return null;
   }
 
   const q = data.quoteResponse.result[0];
 
+  // Validate price is present and reasonable
+  if (q.regularMarketPrice == null || !Number.isFinite(q.regularMarketPrice) || q.regularMarketPrice <= 0) {
+    console.warn(`[StockDataEngine] Invalid price for ${symbol}: ${q.regularMarketPrice}`);
+    return null;
+  }
+
   return {
     symbol: q.symbol ?? symbol,
     name: q.longName ?? q.shortName ?? symbol,
-    price: q.regularMarketPrice ?? 0,
+    price: q.regularMarketPrice,
     change: q.regularMarketChange ?? 0,
     changePercent: q.regularMarketChangePercent ?? 0,
-    high24h: q.regularMarketDayHigh ?? 0,
-    low24h: q.regularMarketDayLow ?? 0,
-    open24h: q.regularMarketOpen ?? 0,
-    previousClose: q.regularMarketPreviousClose ?? 0,
+    high24h: q.regularMarketDayHigh ?? q.regularMarketPrice,
+    low24h: q.regularMarketDayLow ?? q.regularMarketPrice,
+    open24h: q.regularMarketOpen ?? q.regularMarketPrice,
+    previousClose: q.regularMarketPreviousClose ?? q.regularMarketPrice,
     volume: q.regularMarketVolume ?? 0,
     avgVolume30d: q.averageDailyVolume3Month ?? 0,
     marketCap: q.marketCap ?? 0,
@@ -265,7 +364,7 @@ export async function fetchStockQuote(symbol: string): Promise<StockQuote | null
     currency: q.currency ?? "USD",
     exchange: q.fullExchangeName ?? "",
     lastUpdate: (q.regularMarketTime ?? Date.now() / 1000) * 1000,
-    dataStatus: q.regularMarketPrice ? "delayed" : "unavailable",
+    dataStatus: "delayed",
   };
 }
 
@@ -277,44 +376,46 @@ export async function fetchStockQuote(symbol: string): Promise<StockQuote | null
 export async function fetchBatchQuotes(symbols: string[]): Promise<Map<string, StockQuote>> {
   const results = new Map<string, StockQuote>();
 
-  // Yahoo allows ~20 symbols per request
   const chunks: string[][] = [];
   for (let i = 0; i < symbols.length; i += 20) {
     chunks.push(symbols.slice(i, i + 20));
   }
 
   for (const chunk of chunks) {
-    const url = `${YAHOO_V7}?symbols=${chunk.map(encodeURIComponent).join(",")}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,regularMarketPreviousClose,regularMarketVolume,averageDailyVolume3Month,marketCap,shortName,longName,sector,industry,currency,fullExchangeName,regularMarketTime`;
+    const fields = "regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,regularMarketPreviousClose,regularMarketVolume,averageDailyVolume3Month,marketCap,shortName,longName,sector,industry,currency,fullExchangeName,regularMarketTime";
+    const targetUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${chunk.map(encodeURIComponent).join(",")}&fields=${fields}`;
 
-    const data = await fetchYahoo<YahooQuoteResponse>(url);
+    const data = await fetchViaProxy<YahooQuoteResponse>(targetUrl);
 
     if (data?.quoteResponse?.result) {
       for (const q of data.quoteResponse.result) {
+        if (q.regularMarketPrice == null || !Number.isFinite(q.regularMarketPrice) || q.regularMarketPrice <= 0) continue;
+
         results.set(q.symbol, {
           symbol: q.symbol,
           name: q.longName ?? q.shortName ?? q.symbol,
-          price: q.regularMarketPrice ?? 0,
+          price: q.regularMarketPrice,
           change: q.regularMarketChange ?? 0,
           changePercent: q.regularMarketChangePercent ?? 0,
-          high24h: q.regularMarketDayHigh ?? 0,
-          low24h: q.regularMarketDayLow ?? 0,
-          open24h: q.regularMarketOpen ?? 0,
-          previousClose: q.regularMarketPreviousClose ?? 0,
+          high24h: q.regularMarketDayHigh ?? q.regularMarketPrice,
+          low24h: q.regularMarketDayLow ?? q.regularMarketPrice,
+          open24h: q.regularMarketOpen ?? q.regularMarketPrice,
+          previousClose: q.regularMarketPreviousClose ?? q.regularMarketPrice,
           volume: q.regularMarketVolume ?? 0,
           avgVolume30d: q.averageDailyVolume3Month ?? 0,
           marketCap: q.marketCap ?? 0,
-          peRatio: null,
-          eps: null,
-          week52High: 0,
-          week52Low: 0,
-          dividendYield: null,
-          beta: null,
+          peRatio: q.trailingPE ?? null,
+          eps: q.epsTrailingTwelveMonths ?? null,
+          week52High: q.fiftyTwoWeekHigh ?? 0,
+          week52Low: q.fiftyTwoWeekLow ?? 0,
+          dividendYield: q.dividendYield ?? null,
+          beta: q.beta ?? null,
           sector: q.sector ?? "",
           industry: q.industry ?? "",
           currency: q.currency ?? "USD",
           exchange: q.fullExchangeName ?? "",
           lastUpdate: (q.regularMarketTime ?? Date.now() / 1000) * 1000,
-          dataStatus: q.regularMarketPrice ? "delayed" : "unavailable",
+          dataStatus: "delayed",
         });
       }
     }
@@ -327,21 +428,34 @@ export async function fetchBatchQuotes(symbols: string[]): Promise<Map<string, S
 
 /**
  * Search for stocks by name or symbol.
+ * Supports ticker, company name, partial search.
  */
 export async function searchStocks(query: string): Promise<StockSearchResult[]> {
   if (!query || query.length < 1) return [];
 
-  const url = `${YAHOO_SEARCH}?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
-  const data = await fetchYahoo<YahooSearchResponse>(url);
+  const targetUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
 
-  if (!data?.quotes) return [];
+  const data = await fetchViaProxy<YahooSearchResponse>(targetUrl);
+
+  if (!data?.quotes) {
+    // If search fails, try to interpret the query as a direct symbol
+    if (query.length >= 1 && query.length <= 5 && /^[A-Z]+$/i.test(query)) {
+      return [{
+        symbol: query.toUpperCase(),
+        name: query.toUpperCase(),
+        type: "equity" as const,
+        exchange: "",
+      }];
+    }
+    return [];
+  }
 
   return data.quotes
-    .filter((q) => q.symbol && (q.quoteType === "EQUITY" || q.quoteType === "ETF"))
+    .filter((q) => q.symbol && (q.quoteType === "EQUITY" || q.quoteType === "ETF" || q.quoteType === "INDEX"))
     .map((q) => ({
       symbol: q.symbol,
       name: q.shortname ?? q.longname ?? q.symbol,
-      type: q.quoteType === "ETF" ? "etf" as const : "equity" as const,
+      type: q.quoteType === "ETF" ? "etf" as const : q.quoteType === "INDEX" ? "index" as const : "equity" as const,
       exchange: q.exchange ?? "",
       sector: undefined,
       industry: undefined,
@@ -352,14 +466,13 @@ export async function searchStocks(query: string): Promise<StockSearchResult[]> 
 // ── Fundamental Data ──────────────────────────────────────
 
 /**
- * Extract fundamental data from Yahoo Finance chart response.
- * This provides what's available from the free API.
+ * Extract fundamental data from a StockQuote.
  */
 export function extractFundamentals(quote: StockQuote): FundamentalData {
   return {
     symbol: quote.symbol,
     marketCap: quote.marketCap,
-    enterpriseValue: 0, // Not available from free API
+    enterpriseValue: 0,
     trailingPE: quote.peRatio,
     forwardPE: null,
     pegRatio: null,

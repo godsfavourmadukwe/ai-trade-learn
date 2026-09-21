@@ -8,6 +8,7 @@ import {
   fetchStockCandles,
   fetchStockQuote,
   extractFundamentals,
+  getDiagnostics,
   type StockQuote,
   type FundamentalData,
 } from "@/lib/stocks/data-engine";
@@ -36,7 +37,7 @@ import {
 
 // ── Stock Chart Component ─────────────────────────────────
 
-function StockCandlestickChart({ candles, height = 400 }: { candles: Candle[]; height?: number }) {
+function StockCandlestickChart({ candles, height = 400, loading = false }: { candles: Candle[]; height?: number; loading?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
 
@@ -186,8 +187,19 @@ function StockCandlestickChart({ candles, height = 400 }: { candles: Candle[]; h
     return (
       <div className="flex items-center justify-center" style={{ height }}>
         <div className="text-center">
-          <LineChart className="w-10 h-10 text-zinc-600 mx-auto mb-2" />
-          <p className="text-sm text-zinc-500">Loading chart data...</p>
+          {loading ? (
+            <>
+              <div className="w-8 h-8 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin mx-auto mb-3" />
+              <p className="text-sm text-zinc-400">Fetching chart data...</p>
+              <p className="text-xs text-zinc-600 mt-1">Connecting to data provider</p>
+            </>
+          ) : (
+            <>
+              <LineChart className="w-10 h-10 text-zinc-600 mx-auto mb-2" />
+              <p className="text-sm text-zinc-500">No chart data available</p>
+              <p className="text-xs text-zinc-600 mt-1">Try a different stock or timeframe</p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -226,18 +238,31 @@ export function StockMarketPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
+  const abortRef = useRef<number>(0);
 
   const loadData = useCallback(async (symbol: string, iv: Interval) => {
+    // Increment request ID to detect stale responses
+    const requestId = ++abortRef.current;
     setLoading(true);
     setError(null);
     try {
+      // Fetch quote and candles in parallel
       const [quoteData, candleData] = await Promise.all([
         fetchStockQuote(symbol),
         fetchStockCandles(symbol, iv, 200),
       ]);
 
+      // If a newer request started, discard this result
+      if (requestId !== abortRef.current) return;
+
+      const diag = getDiagnostics();
+
       if (!quoteData) {
-        setError(`Could not fetch data for ${symbol}. The stock may be delisted or the API may be temporarily unavailable.`);
+        // Provide specific diagnostics instead of generic message
+        const diagMsg = diag.consecutiveErrors > 2
+          ? `API connectivity issue (${diag.consecutiveErrors} consecutive failures, avg latency ${Math.round(diag.avgLatencyMs)}ms). `
+          : "";
+        setError(`${diagMsg}Could not load data for "${symbol}". The symbol may be invalid, delisted, or the data service may be temporarily unavailable. Check the browser console for details.`);
         setLoading(false);
         return;
       }
@@ -251,7 +276,10 @@ export function StockMarketPage() {
       setAnalysis(stockAnalysis);
       setLastUpdate(Date.now());
     } catch (err) {
-      setError(`Error loading data: ${err instanceof Error ? err.message : "Unknown error"}`);
+      if (requestId !== abortRef.current) return;
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setError(`Failed to load data for "${symbol}": ${msg}`);
+      console.error(`[StockMarketPage] Load error for ${symbol}:`, err);
     }
     setLoading(false);
   }, []);
@@ -420,7 +448,7 @@ export function StockMarketPage() {
               </div>
             </CardHeader>
             <CardContent>
-              <StockCandlestickChart candles={candles} height={400} />
+              <StockCandlestickChart candles={candles} height={400} loading={loading} />
             </CardContent>
           </Card>
         </div>
