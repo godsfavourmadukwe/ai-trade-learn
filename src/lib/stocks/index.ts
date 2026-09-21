@@ -6,15 +6,21 @@
 export {
   fetchStockCandles,
   fetchStockQuote,
+  fetchStockQuoteAndCandles,
+  fetchStockCorporateActions,
+  fetchStockFundamentals,
   fetchBatchQuotes,
   searchStocks,
   extractFundamentals,
+  getDiagnostics,
 } from "./data-engine";
 
 export type {
   StockQuote,
   StockSearchResult,
   FundamentalData,
+  CorporateActions,
+  DataDiagnostics,
 } from "./data-engine";
 
 // AI Analyst

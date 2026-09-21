@@ -1,18 +1,29 @@
 // ============================================================
 // STOCK MARKET INTELLIGENCE — Stock Data Engine
 //
-// Professional stock data engine using Yahoo Finance API.
-// Uses api.allorigins.win as CORS proxy since Yahoo Finance
-// does not set CORS headers for browser requests.
+// Professional stock data engine using Yahoo Finance via the
+// project's Convex server-side proxy (src/convex/stockProxy.ts).
+//
+// Why server-side: Yahoo Finance does not set CORS headers, so
+// browser fetch() cannot reach it directly — this was the root
+// cause of "Could not fetch data". Server-side actions have no
+// such restriction and also handle Yahoo's cookie/crumb auth.
 //
 // Provides: live quotes, historical OHLCV, search, fundamentals.
 // NEVER fabricates data — reports failures clearly.
 //
 // Data flow:
-//   Browser → allorigins proxy → Yahoo Finance API → proxy → Browser
+//   Browser → Convex action → Yahoo Finance API → normalized → UI
 // ============================================================
 
 import type { Interval, Candle } from "@/lib/market/types";
+import { api } from "@/convex/_generated/api";
+import { convexHttpClient } from "@/lib/convex-client";
+
+// ── Convex transport ──────────────────────────────────────
+//
+// A shared browser HTTP client (src/lib/convex-client.ts) is used
+// so the whole app keeps one Convex connection per tab.
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -86,6 +97,12 @@ export interface FundamentalData {
   dataStatus: "available" | "partial" | "unavailable";
 }
 
+/** Corporate actions (splits/dividends) when Yahoo includes them for the range. */
+export interface CorporateActions {
+  splits: Array<{ date: number; split: string }>;
+  dividends: Array<{ date: number; amount: number }>;
+}
+
 // ── Diagnostics ───────────────────────────────────────────
 
 export interface DataDiagnostics {
@@ -106,7 +123,7 @@ const diagnostics: DataDiagnostics = {
   totalRequests: 0,
   totalErrors: 0,
   consecutiveErrors: 0,
-  proxyUsed: "allorigins",
+  proxyUsed: "convex:stockProxy",
   avgLatencyMs: 0,
 };
 
@@ -117,9 +134,8 @@ export function getDiagnostics(): DataDiagnostics {
 function recordSuccess(latencyMs: number): void {
   diagnostics.lastSuccess = Date.now();
   diagnostics.consecutiveErrors = 0;
-  diagnostics.avgLatencyMs = diagnostics.avgLatencyMs > 0
-    ? (diagnostics.avgLatencyMs + latencyMs) / 2
-    : latencyMs;
+  diagnostics.avgLatencyMs =
+    diagnostics.avgLatencyMs > 0 ? (diagnostics.avgLatencyMs + latencyMs) / 2 : latencyMs;
 }
 
 function recordError(error: string): void {
@@ -128,73 +144,66 @@ function recordError(error: string): void {
   diagnostics.consecutiveErrors++;
 }
 
-// ── CORS Proxy Layer ──────────────────────────────────────
-//
-// Yahoo Finance does NOT set CORS headers. Browser fetch() fails
-// with a network error. We use api.allorigins.win which fetches
-// the URL server-side and returns the response body.
+// ── Rate limiting ─────────────────────────────────────────
 
-const ALLORIGINS_BASE = "https://api.allorigins.win/raw?url=";
-
-// Rate limiting
 const requestTimestamps: number[] = [];
 const MAX_REQUESTS_PER_SECOND = 3;
 
-function rateLimit(): Promise<void> {
+async function rateLimit(): Promise<void> {
   const now = Date.now();
   while (requestTimestamps.length > 0 && requestTimestamps[0] < now - 1000) {
     requestTimestamps.shift();
   }
   if (requestTimestamps.length >= MAX_REQUESTS_PER_SECOND) {
-    return new Promise((resolve) => setTimeout(resolve, 400));
+    const waitMs = requestTimestamps[0] + 1000 - now;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, waitMs)));
   }
-  requestTimestamps.push(now);
-  return Promise.resolve();
+  requestTimestamps.push(Date.now());
 }
 
-/**
- * Fetch JSON through the CORS proxy. The proxy returns the raw
- * response body from the target URL.
- */
-async function fetchViaProxy<T>(targetUrl: string): Promise<T | null> {
+/** Call a Convex proxy action with in-flight dedup + diagnostics. */
+const inFlight = new Map<string, Promise<unknown>>();
+
+async function callProxy<T>(
+  actionName: "fetchChart" | "searchSymbols" | "getQuoteSummary",
+  args: Record<string, unknown>,
+  dedupKey: string,
+): Promise<T | null> {
   await rateLimit();
+
+  const existing = inFlight.get(dedupKey);
+  if (existing) return (await existing) as T | null;
+
   diagnostics.lastAttempt = Date.now();
   diagnostics.totalRequests++;
+  const start = Date.now();
 
-  const proxyUrl = `${ALLORIGINS_BASE}${encodeURIComponent(targetUrl)}`;
+  const promise = (async () => {
+    try {
+      const fn = api.stockProxy[actionName] as never;
+      const result = (await convexHttpClient.action(fn, args as never)) as {
+        ok: boolean;
+        error?: string;
+      } & Record<string, unknown>;
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-    const start = Date.now();
-
-    const response = await fetch(proxyUrl, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    if (!response.ok) {
-      const msg = `Proxy HTTP ${response.status}`;
-      recordError(msg);
-      console.warn(`[StockDataEngine] ${msg} for ${targetUrl}`);
+      recordSuccess(Date.now() - start);
+      if (!result.ok) {
+        recordError(result.error ?? "proxy returned not-ok");
+        console.warn(`[StockDataEngine] ${actionName} failed: ${result.error}`);
+        return null;
+      }
+      return result as T;
+    } catch (err) {
+      recordError(err instanceof Error ? err.message : String(err));
+      console.warn(`[StockDataEngine] ${actionName} threw:`, err);
       return null;
+    } finally {
+      inFlight.delete(dedupKey);
     }
+  })();
 
-    const text = await response.text();
-    if (!text || text.length < 2) {
-      recordError("Empty proxy response");
-      return null;
-    }
-
-    const data = JSON.parse(text) as T;
-    recordSuccess(Date.now() - start);
-    return data;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    recordError(msg);
-    console.warn(`[StockDataEngine] Fetch error: ${msg}`);
-    return null;
-  }
+  inFlight.set(dedupKey, promise);
+  return (await promise) as T | null;
 }
 
 // ── Interval Mapping ──────────────────────────────────────
@@ -220,6 +229,85 @@ function cacheKey(symbol: string, interval: Interval): string {
   return `${symbol}|${interval}`;
 }
 
+// ── Quote construction from Yahoo chart meta ──────────────
+// The v8 chart endpoint returns full quote metadata, so a quote
+// can be derived from the same request as the candles.
+
+interface ChartActionOk {
+  ok: true;
+  candles: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>;
+  meta: {
+    symbol: string;
+    currency: string;
+    exchangeName: string;
+    fullExchangeName: string;
+    instrumentType: string;
+    longName: string;
+    shortName: string;
+    regularMarketPrice: number | null;
+    regularMarketChange: number | null;
+    regularMarketChangePercent: number | null;
+    regularMarketDayHigh: number | null;
+    regularMarketDayLow: number | null;
+    regularMarketOpen: number | null;
+    regularMarketVolume: number | null;
+    previousClose: number | null;
+    chartPreviousClose: number | null;
+    fiftyTwoWeekHigh: number | null;
+    fiftyTwoWeekLow: number | null;
+    regularMarketTime: number | null;
+  };
+  splits: Array<{ date: number; split: string }>;
+  dividends: Array<{ date: number; amount: number }>;
+}
+
+const fundamentalsCache = new Map<string, { data: FundamentalData; fetchedAt: number }>();
+const FUNDAMENTALS_CACHE_TTL = 15 * 60_000; // 15 minutes
+
+function buildQuoteFromChart(
+  symbol: string,
+  meta: ChartActionOk["meta"],
+  fallbackPrice: number | null,
+): StockQuote | null {
+  const price = meta.regularMarketPrice ?? fallbackPrice;
+  if (price == null || !Number.isFinite(price) || price <= 0) return null;
+
+  const change = meta.regularMarketChange ?? null;
+  const changePercent = meta.regularMarketChangePercent ?? null;
+  const prevClose =
+    meta.previousClose ??
+    (change != null ? price - change : null) ??
+    meta.chartPreviousClose ??
+    price;
+
+  return {
+    symbol: meta.symbol || symbol,
+    name: meta.longName || meta.shortName || symbol,
+    price,
+    change: change ?? (prevClose != null ? price - prevClose : 0),
+    changePercent: changePercent ?? (prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0),
+    high24h: meta.regularMarketDayHigh ?? price,
+    low24h: meta.regularMarketDayLow ?? price,
+    open24h: meta.regularMarketOpen ?? prevClose ?? price,
+    previousClose: prevClose,
+    volume: meta.regularMarketVolume ?? 0,
+    avgVolume30d: 0,
+    marketCap: 0,
+    peRatio: null,
+    eps: null,
+    week52High: meta.fiftyTwoWeekHigh ?? 0,
+    week52Low: meta.fiftyTwoWeekLow ?? 0,
+    dividendYield: null,
+    beta: null,
+    sector: "",
+    industry: "",
+    currency: meta.currency || "USD",
+    exchange: meta.fullExchangeName || meta.exchangeName || "",
+    lastUpdate: (meta.regularMarketTime ?? Date.now() / 1000) * 1000,
+    dataStatus: "delayed",
+  };
+}
+
 // ── Historical Candles ────────────────────────────────────
 
 /**
@@ -239,50 +327,26 @@ export async function fetchStockCandles(
   }
 
   const { range, interval: yfInterval } = intervalRangeMap(interval);
-  const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${yfInterval}&includePrePost=false`;
+  const result = await callProxy<ChartActionOk>(
+    "fetchChart",
+    { symbol, range, interval: yfInterval },
+    `chart|${symbol}|${range}|${yfInterval}`,
+  );
 
-  const data = await fetchViaProxy<YahooChartResponse>(targetUrl);
-
-  if (!data?.chart?.result?.[0]) {
+  if (!result?.ok) {
     console.warn(`[StockDataEngine] No chart data for ${symbol} ${interval}`);
     return [];
   }
 
-  const result = data.chart.result[0];
-  const timestamps = result.timestamp;
-  const ohlcv = result.indicators?.quote?.[0];
-
-  if (!timestamps || !ohlcv || timestamps.length === 0) {
-    return [];
-  }
-
-  const candles: Candle[] = [];
-  for (let i = 0; i < timestamps.length; i++) {
-    const o = ohlcv.open?.[i];
-    const h = ohlcv.high?.[i];
-    const l = ohlcv.low?.[i];
-    const c = ohlcv.close?.[i];
-    const v = ohlcv.volume?.[i];
-
-    // Validate each candle
-    if (o == null || h == null || l == null || c == null || v == null) continue;
-    if (!Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) continue;
-    if (o <= 0 || h <= 0 || l <= 0 || c <= 0) continue;
-    if (h < l) continue;
-
-    candles.push({
-      time: timestamps[i] * 1000,
-      open: o,
-      high: h,
-      low: l,
-      close: c,
-      volume: v,
-      closed: true,
-    });
-  }
-
-  // Ensure ascending order
-  candles.sort((a, b) => a.time - b.time);
+  const candles: Candle[] = result.candles.map((c) => ({
+    time: c.time * 1000, // Yahoo sends seconds → app uses ms
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+    closed: true,
+  }));
 
   // Cache the result
   candleCache.set(key, { data: candles, fetchedAt: Date.now() });
@@ -297,129 +361,100 @@ export async function fetchStockCandles(
  * Returns null on failure — never fabricates data.
  */
 export async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
-  const fields = [
-    "regularMarketPrice",
-    "regularMarketChange",
-    "regularMarketChangePercent",
-    "regularMarketDayHigh",
-    "regularMarketDayLow",
-    "regularMarketOpen",
-    "regularMarketPreviousClose",
-    "regularMarketVolume",
-    "averageDailyVolume3Month",
-    "marketCap",
-    "trailingPE",
-    "epsTrailingTwelveMonths",
-    "fiftyTwoWeekHigh",
-    "fiftyTwoWeekLow",
-    "dividendYield",
-    "beta",
-    "shortName",
-    "longName",
-    "sector",
-    "industry",
-    "currency",
-    "fullExchangeName",
-    "regularMarketTime",
-  ].join(",");
+  // 1y of daily candles doubles as the quote request — Yahoo's chart
+  // meta carries the current price, change, day high/low, volume,
+  // 52-week range, exchange and company name.
+  const { range, interval: yfInterval } = intervalRangeMap("1d");
+  const result = await callProxy<ChartActionOk>(
+    "fetchChart",
+    { symbol, range, interval: yfInterval },
+    `chart|${symbol}|${range}|${yfInterval}`,
+  );
+  if (!result?.ok) return null;
+  return buildQuoteFromChart(symbol, result.meta, null);
+}
 
-  const targetUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}&fields=${fields}`;
+/**
+ * Fetch quote and candles in a single chart request.
+ * Saves one Yahoo round-trip compared to calling the two
+ * functions separately — used by the stock page.
+ */
+export async function fetchStockQuoteAndCandles(
+  symbol: string,
+  interval: Interval,
+  limit: number = 200,
+): Promise<{ quote: StockQuote | null; candles: Candle[] }> {
+  const { range, interval: yfInterval } = intervalRangeMap(interval);
+  const key = `chart|${symbol}|${range}|${yfInterval}`;
 
-  const data = await fetchViaProxy<YahooQuoteResponse>(targetUrl);
+  const cached = candleCache.get(cacheKey(symbol, interval));
+  const result = await callProxy<ChartActionOk>(
+    "fetchChart",
+    { symbol, range, interval: yfInterval },
+    key,
+  );
 
-  if (!data?.quoteResponse?.result?.[0]) {
-    console.warn(`[StockDataEngine] No quote data for ${symbol}`);
-    return null;
-  }
+  if (!result?.ok) return { quote: null, candles: cached?.data.slice(-limit) ?? [] };
 
-  const q = data.quoteResponse.result[0];
+  const candles: Candle[] = result.candles.map((c) => ({
+    time: c.time * 1000,
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+    closed: true,
+  }));
 
-  // Validate price is present and reasonable
-  if (q.regularMarketPrice == null || !Number.isFinite(q.regularMarketPrice) || q.regularMarketPrice <= 0) {
-    console.warn(`[StockDataEngine] Invalid price for ${symbol}: ${q.regularMarketPrice}`);
-    return null;
-  }
+  candleCache.set(cacheKey(symbol, interval), { data: candles, fetchedAt: Date.now() });
 
-  return {
-    symbol: q.symbol ?? symbol,
-    name: q.longName ?? q.shortName ?? symbol,
-    price: q.regularMarketPrice,
-    change: q.regularMarketChange ?? 0,
-    changePercent: q.regularMarketChangePercent ?? 0,
-    high24h: q.regularMarketDayHigh ?? q.regularMarketPrice,
-    low24h: q.regularMarketDayLow ?? q.regularMarketPrice,
-    open24h: q.regularMarketOpen ?? q.regularMarketPrice,
-    previousClose: q.regularMarketPreviousClose ?? q.regularMarketPrice,
-    volume: q.regularMarketVolume ?? 0,
-    avgVolume30d: q.averageDailyVolume3Month ?? 0,
-    marketCap: q.marketCap ?? 0,
-    peRatio: q.trailingPE ?? null,
-    eps: q.epsTrailingTwelveMonths ?? null,
-    week52High: q.fiftyTwoWeekHigh ?? 0,
-    week52Low: q.fiftyTwoWeekLow ?? 0,
-    dividendYield: q.dividendYield ?? null,
-    beta: q.beta ?? null,
-    sector: q.sector ?? "",
-    industry: q.industry ?? "",
-    currency: q.currency ?? "USD",
-    exchange: q.fullExchangeName ?? "",
-    lastUpdate: (q.regularMarketTime ?? Date.now() / 1000) * 1000,
-    dataStatus: "delayed",
-  };
+  const meta = result.meta;
+  const lastClose = candles.length > 0 ? candles[candles.length - 1].close : null;
+  const quote = buildQuoteFromChart(symbol, meta, lastClose);
+
+  return { quote, candles: candles.slice(-limit) };
+}
+
+/** Fetch corporate actions (splits/dividends) for a symbol+interval when available. */
+export async function fetchStockCorporateActions(
+  symbol: string,
+  interval: Interval,
+): Promise<CorporateActions> {
+  const { range, interval: yfInterval } = intervalRangeMap(interval);
+  const result = await callProxy<ChartActionOk>(
+    "fetchChart",
+    { symbol, range, interval: yfInterval },
+    `chart|${symbol}|${range}|${yfInterval}`,
+  );
+  if (!result?.ok) return { splits: [], dividends: [] };
+  return { splits: result.splits, dividends: result.dividends };
 }
 
 // ── Batch Quotes ──────────────────────────────────────────
 
 /**
  * Fetch quotes for multiple symbols at once.
+ * The Yahoo chart endpoint is per-symbol, so this fans out into
+ * bounded-parallelism requests.
  */
 export async function fetchBatchQuotes(symbols: string[]): Promise<Map<string, StockQuote>> {
   const results = new Map<string, StockQuote>();
 
-  const chunks: string[][] = [];
-  for (let i = 0; i < symbols.length; i += 20) {
-    chunks.push(symbols.slice(i, i + 20));
-  }
+  const CONCURRENCY = 3;
+  const queue = [...symbols];
 
-  for (const chunk of chunks) {
-    const fields = "regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,regularMarketPreviousClose,regularMarketVolume,averageDailyVolume3Month,marketCap,shortName,longName,sector,industry,currency,fullExchangeName,regularMarketTime";
-    const targetUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${chunk.map(encodeURIComponent).join(",")}&fields=${fields}`;
-
-    const data = await fetchViaProxy<YahooQuoteResponse>(targetUrl);
-
-    if (data?.quoteResponse?.result) {
-      for (const q of data.quoteResponse.result) {
-        if (q.regularMarketPrice == null || !Number.isFinite(q.regularMarketPrice) || q.regularMarketPrice <= 0) continue;
-
-        results.set(q.symbol, {
-          symbol: q.symbol,
-          name: q.longName ?? q.shortName ?? q.symbol,
-          price: q.regularMarketPrice,
-          change: q.regularMarketChange ?? 0,
-          changePercent: q.regularMarketChangePercent ?? 0,
-          high24h: q.regularMarketDayHigh ?? q.regularMarketPrice,
-          low24h: q.regularMarketDayLow ?? q.regularMarketPrice,
-          open24h: q.regularMarketOpen ?? q.regularMarketPrice,
-          previousClose: q.regularMarketPreviousClose ?? q.regularMarketPrice,
-          volume: q.regularMarketVolume ?? 0,
-          avgVolume30d: q.averageDailyVolume3Month ?? 0,
-          marketCap: q.marketCap ?? 0,
-          peRatio: q.trailingPE ?? null,
-          eps: q.epsTrailingTwelveMonths ?? null,
-          week52High: q.fiftyTwoWeekHigh ?? 0,
-          week52Low: q.fiftyTwoWeekLow ?? 0,
-          dividendYield: q.dividendYield ?? null,
-          beta: q.beta ?? null,
-          sector: q.sector ?? "",
-          industry: q.industry ?? "",
-          currency: q.currency ?? "USD",
-          exchange: q.fullExchangeName ?? "",
-          lastUpdate: (q.regularMarketTime ?? Date.now() / 1000) * 1000,
-          dataStatus: "delayed",
-        });
-      }
+  async function worker(): Promise<void> {
+    for (;;) {
+      const symbol = queue.shift();
+      if (!symbol) return;
+      const quote = await fetchStockQuote(symbol);
+      if (quote) results.set(quote.symbol, quote);
     }
   }
+
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, queue.length) }, () => worker()),
+  );
 
   return results;
 }
@@ -433,11 +468,20 @@ export async function fetchBatchQuotes(symbols: string[]): Promise<Map<string, S
 export async function searchStocks(query: string): Promise<StockSearchResult[]> {
   if (!query || query.length < 1) return [];
 
-  const targetUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
+  const result = await callProxy<{
+    ok: true;
+    results: Array<{
+      symbol: string;
+      name: string;
+      quoteType: string;
+      exchange: string;
+      sector: string;
+      industry: string;
+      marketCap: number;
+    }>;
+  }>("searchSymbols", { query }, `search|${query.trim().toLowerCase()}`);
 
-  const data = await fetchViaProxy<YahooSearchResponse>(targetUrl);
-
-  if (!data?.quotes) {
+  if (!result?.ok) {
     // If search fails, try to interpret the query as a direct symbol
     if (query.length >= 1 && query.length <= 5 && /^[A-Z]+$/i.test(query)) {
       return [{
@@ -450,23 +494,115 @@ export async function searchStocks(query: string): Promise<StockSearchResult[]> 
     return [];
   }
 
-  return data.quotes
-    .filter((q) => q.symbol && (q.quoteType === "EQUITY" || q.quoteType === "ETF" || q.quoteType === "INDEX"))
-    .map((q) => ({
-      symbol: q.symbol,
-      name: q.shortname ?? q.longname ?? q.symbol,
-      type: q.quoteType === "ETF" ? "etf" as const : q.quoteType === "INDEX" ? "index" as const : "equity" as const,
-      exchange: q.exchange ?? "",
-      sector: undefined,
-      industry: undefined,
-      marketCap: q.marketCap ?? undefined,
-    }));
+  return result.results.map((q) => ({
+    symbol: q.symbol,
+    name: q.name,
+    type:
+      q.quoteType === "ETF"
+        ? ("etf" as const)
+        : q.quoteType === "INDEX"
+          ? ("index" as const)
+          : q.quoteType === "MUTUALFUND" || q.quoteType === "MUTUAL_FUND"
+            ? ("mutual_fund" as const)
+            : q.quoteType === "EQUITY"
+              ? ("equity" as const)
+              : ("other" as const),
+    exchange: q.exchange,
+    sector: q.sector || undefined,
+    industry: q.industry || undefined,
+    marketCap: q.marketCap || undefined,
+  }));
 }
 
 // ── Fundamental Data ──────────────────────────────────────
 
 /**
- * Extract fundamental data from a StockQuote.
+ * Fetch full fundamentals from Yahoo's quoteSummary endpoint
+ * (crumb-authenticated server-side). Returns null on failure.
+ */
+export async function fetchStockFundamentals(symbol: string): Promise<FundamentalData | null> {
+  const cached = fundamentalsCache.get(symbol);
+  if (cached && Date.now() - cached.fetchedAt < FUNDAMENTALS_CACHE_TTL) {
+    return cached.data;
+  }
+
+  const result = await callProxy<{
+    ok: true;
+    summary: Record<string, unknown> & {
+      sector: string;
+      industry: string;
+      marketCap: number | null;
+      enterpriseValue: number | null;
+      trailingPE: number | null;
+      forwardPE: number | null;
+      pegRatio: number | null;
+      priceToBook: number | null;
+      evToRevenue: number | null;
+      evToEBITDA: number | null;
+      profitMargin: number | null;
+      operatingMargin: number | null;
+      grossMargin: number | null;
+      returnOnEquity: number | null;
+      returnOnAssets: number | null;
+      revenueGrowth: number | null;
+      earningsGrowth: number | null;
+      debtToEquity: number | null;
+      currentRatio: number | null;
+      quickRatio: number | null;
+      bookValue: number | null;
+      dividendYield: number | null;
+      payoutRatio: number | null;
+      beta: number | null;
+      trailingEps: number | null;
+      forwardEps: number | null;
+      revenuePerShare: number | null;
+      nextEarningsDate: number | null;
+    };
+  }>("getQuoteSummary", { symbol }, `summary|${symbol}`);
+
+  if (!result?.ok) return null;
+
+  const s = result.summary;
+  const data: FundamentalData = {
+    symbol,
+    marketCap: s.marketCap ?? 0,
+    enterpriseValue: s.enterpriseValue ?? 0,
+    trailingPE: s.trailingPE,
+    forwardPE: s.forwardPE,
+    pegRatio: s.pegRatio,
+    priceToBook: s.priceToBook,
+    priceToSales: null,
+    evToRevenue: s.evToRevenue,
+    evToEBITDA: s.evToEBITDA,
+    profitMargin: s.profitMargin,
+    operatingMargin: s.operatingMargin,
+    grossMargin: s.grossMargin,
+    returnOnEquity: s.returnOnEquity,
+    returnOnAssets: s.returnOnAssets,
+    revenueGrowth: s.revenueGrowth,
+    earningsGrowth: s.earningsGrowth,
+    debtToEquity: s.debtToEquity,
+    currentRatio: s.currentRatio,
+    quickRatio: s.quickRatio,
+    bookValue: s.bookValue,
+    dividendYield: s.dividendYield,
+    payoutRatio: s.payoutRatio,
+    beta: s.beta,
+    trailingEps: s.trailingEps,
+    forwardEps: s.forwardEps,
+    revenuePerShare: s.revenuePerShare,
+    lastFiscalYearEnd: null,
+    nextEarningsDate: s.nextEarningsDate ? s.nextEarningsDate * 1000 : null,
+    dataStatus: "available",
+  };
+
+  fundamentalsCache.set(symbol, { data, fetchedAt: Date.now() });
+  return data;
+}
+
+/**
+ * Extract fundamental data from a StockQuote (local, no network).
+ * Kept for compatibility — use fetchStockFundamentals for real data.
  */
 export function extractFundamentals(quote: StockQuote): FundamentalData {
   return {
@@ -501,71 +637,4 @@ export function extractFundamentals(quote: StockQuote): FundamentalData {
     nextEarningsDate: null,
     dataStatus: quote.peRatio !== null ? "partial" : "unavailable",
   };
-}
-
-// ── Yahoo Finance Response Types ──────────────────────────
-
-interface YahooChartResponse {
-  chart: {
-    result: Array<{
-      timestamp: number[];
-      indicators: {
-        quote: Array<{
-          open: (number | null)[];
-          high: (number | null)[];
-          low: (number | null)[];
-          close: (number | null)[];
-          volume: (number | null)[];
-        }>;
-      };
-      meta: {
-        symbol: string;
-        regularMarketPrice: number;
-        previousClose: number;
-      };
-    }>;
-    error: unknown;
-  };
-}
-
-interface YahooQuoteResponse {
-  quoteResponse: {
-    result: Array<{
-      symbol: string;
-      shortName?: string;
-      longName?: string;
-      regularMarketPrice?: number;
-      regularMarketChange?: number;
-      regularMarketChangePercent?: number;
-      regularMarketDayHigh?: number;
-      regularMarketDayLow?: number;
-      regularMarketOpen?: number;
-      regularMarketPreviousClose?: number;
-      regularMarketVolume?: number;
-      averageDailyVolume3Month?: number;
-      marketCap?: number;
-      trailingPE?: number;
-      epsTrailingTwelveMonths?: number;
-      fiftyTwoWeekHigh?: number;
-      fiftyTwoWeekLow?: number;
-      dividendYield?: number;
-      beta?: number;
-      sector?: string;
-      industry?: string;
-      currency?: string;
-      fullExchangeName?: string;
-      regularMarketTime?: number;
-    }>;
-  };
-}
-
-interface YahooSearchResponse {
-  quotes: Array<{
-    symbol: string;
-    shortname?: string;
-    longname?: string;
-    quoteType?: string;
-    exchange?: string;
-    marketCap?: number;
-  }>;
 }

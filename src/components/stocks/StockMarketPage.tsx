@@ -5,8 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { StockSearch } from "./StockSearch";
 import {
-  fetchStockCandles,
-  fetchStockQuote,
+  fetchStockQuoteAndCandles,
   extractFundamentals,
   getDiagnostics,
   type StockQuote,
@@ -246,11 +245,12 @@ export function StockMarketPage() {
     setLoading(true);
     setError(null);
     try {
-      // Fetch quote and candles in parallel
-      const [quoteData, candleData] = await Promise.all([
-        fetchStockQuote(symbol),
-        fetchStockCandles(symbol, iv, 200),
-      ]);
+      // Quote + candles come from a single Yahoo chart request
+      const { quote: quoteData, candles: candleData } = await fetchStockQuoteAndCandles(
+        symbol,
+        iv,
+        200,
+      );
 
       // If a newer request started, discard this result
       if (requestId !== abortRef.current) return;
