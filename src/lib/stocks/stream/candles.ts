@@ -93,6 +93,8 @@ class CandleBuffer {
 export class CandleAggregator {
   private buffers = new Map<string, CandleBuffer>();
   private readonly maxPerInterval: number;
+  /** Last seen cumulative day-volume per symbol (for delta computation). */
+  private lastCumulative = new Map<string, number>();
 
   constructor(maxPerInterval = 400) {
     this.maxPerInterval = maxPerInterval;
@@ -132,6 +134,23 @@ export class CandleAggregator {
         closed: true,
       });
     }
+  }
+
+  /**
+   * Apply a tick carrying the provider's CUMULATIVE day volume.
+   * Computes the per-tick delta internally, which makes re-applying
+   * the same tick idempotent (delta 0) — safe when the same provider
+   * tick arrives via more than one path (browser socket + backend relay).
+   */
+  applyCumulativeTick(symbol: string, price: number, timeMs: number, cumulativeDayVolume: number): void {
+    if (!Number.isFinite(cumulativeDayVolume) || cumulativeDayVolume <= 0) {
+      this.applyTick(symbol, price, timeMs, 0);
+      return;
+    }
+    const prev = this.lastCumulative.get(symbol) ?? 0;
+    const delta = prev > 0 ? Math.max(0, cumulativeDayVolume - prev) : 0;
+    this.lastCumulative.set(symbol, cumulativeDayVolume);
+    this.applyTick(symbol, price, timeMs, delta);
   }
 
   /** Apply a live tick to every tracked interval. */
@@ -174,7 +193,16 @@ export class CandleAggregator {
     }
   }
 
+  /**
+   * Returns a SNAPSHOT (fresh array reference every call).
+   *
+   * The buffer mutates candle objects in place as ticks arrive, so
+   * returning the internal array would give React the same reference
+   * on every update: `setCandles(getCandles(...))` would bail out and
+   * the chart would NEVER redraw. A fresh outer array fixes the
+   * re-render while keeping mutation cheap for live ticks.
+   */
   getCandles(symbol: string, interval: StreamInterval): Candle[] {
-    return this.buffer(symbol, interval).getAll();
+    return [...this.buffer(symbol, interval).getAll()];
   }
 }

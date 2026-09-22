@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { StockSearch } from "./StockSearch";
+import { StreamDebugPanel, isStreamDebugVisible } from "./StreamDebugPanel";
 import { extractFundamentals, type FundamentalData } from "@/lib/stocks/data-engine";
 import { useStockStream } from "@/lib/stocks/stream";
 import type { StreamStatus } from "@/lib/stocks/stream";
@@ -229,6 +230,7 @@ const STATUS_META: Record<StreamStatus, { label: string; cls: string; dot: strin
   connecting: { label: "CONNECTING", cls: "text-amber-400 border-amber-500/40 bg-amber-500/10", dot: "bg-amber-400" },
   reconnecting: { label: "RECONNECTING", cls: "text-amber-400 border-amber-500/40 bg-amber-500/10", dot: "bg-amber-400" },
   stale: { label: "STALE", cls: "text-rose-400 border-rose-500/40 bg-rose-500/10", dot: "bg-rose-400" },
+  delayed: { label: "DELAYED", cls: "text-amber-400 border-amber-400/40 bg-amber-500/10", dot: "bg-amber-400" },
   "market-closed": { label: "MARKET CLOSED", cls: "text-zinc-400 border-white/10 bg-white/[0.03]", dot: "bg-zinc-500" },
   error: { label: "ERROR", cls: "text-rose-400 border-rose-500/40 bg-rose-500/10", dot: "bg-rose-400" },
 };
@@ -260,6 +262,9 @@ export function StockMarketPage() {
     loading,
     error,
     health,
+    clientHealth,
+    backend,
+    lastFrontendUpdate,
     refresh: refreshStream,
   } = useStockStream(selectedSymbol, interval);
 
@@ -572,6 +577,19 @@ export function StockMarketPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Temporary internal stream diagnostics (dev / ?streamDebug) */}
+      {isStreamDebugVisible() && (
+        <StreamDebugPanel
+          symbol={selectedSymbol}
+          price={quote?.price ?? null}
+          health={health}
+          clientHealth={clientHealth}
+          backend={backend}
+          lastFrontendUpdate={lastFrontendUpdate}
+          chartPoints={candles.length}
+        />
       )}
 
       {/* Data Status */}

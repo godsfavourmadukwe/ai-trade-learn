@@ -23,4 +23,12 @@ export {
   type StreamHealth,
   type StreamCallbacks,
 } from "./engine";
-export { useStockStream, toStreamInterval, type StockStreamState } from "./use-stock-stream";
+export { base64ToBytes } from "./protobuf";
+export {
+  useStockStream,
+  toStreamInterval,
+  combineStreamHealth,
+  type StockStreamState,
+  type StockStreamRow,
+} from "./use-stock-stream";
+export { applyLiveQuote, type LiveQuotePatch } from "./quote-merge";

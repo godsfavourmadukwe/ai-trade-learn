@@ -33,8 +33,14 @@
 //  26: askSize         (varint)
 //  30: espMatchedTape  (varint)
 //
-// Only the frames' numeric/string leaves are decoded — no
-// protobuf library dependency is needed.
+// IMPORTANT — this module must run in the BROWSER, in Node and
+// in the Convex "use node" runtime. It therefore uses NO Node
+// built-ins: no Buffer, no fs. Base64 decoding, byte reading
+// and UTF-8 decoding are implemented on Uint8Array/DataView/
+// TextDecoder only. (The previous implementation used the global
+// `Buffer`, which does not exist in browsers — every incoming
+// message threw `Buffer is not defined` and no tick ever
+// reached the UI. This is the fix for that.)
 // ============================================================
 
 /** One normalized real-time quote tick from the stream. */
@@ -60,32 +66,74 @@ export interface StreamTick {
   askSize: number | null;
 }
 
-/** Minimal protobuf wire-format reader for PricingData frames. */
+// ── Pure-JS base64 → bytes (works in every runtime) ───────
+
+const B64_LOOKUP = (() => {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const table = new Int16Array(128).fill(-1);
+  for (let i = 0; i < alphabet.length; i++) table[alphabet.charCodeAt(i)] = i;
+  table["-".charCodeAt(0)] = 62; // URL-safe variants
+  table["_".charCodeAt(0)] = 63;
+  return table;
+})();
+
+/** Decode base64 (standard or URL-safe) into bytes. Returns null on invalid input. */
+export function base64ToBytes(b64: string): Uint8Array | null {
+  const clean = b64.replace(/[\s=]+$/g, "");
+  const rem = clean.length % 4;
+  if (rem === 1) return null;
+  const outLen = Math.floor((clean.length * 3) / 4) + (rem === 2 ? 1 : rem === 3 ? 2 : 0);
+  const out = new Uint8Array(outLen);
+  let acc = 0;
+  let accBits = 0;
+  let o = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const code = clean.charCodeAt(i);
+    const val = code < 128 ? B64_LOOKUP[code] : -1;
+    if (val < 0) return null; // contains a non-base64 character
+    acc = (acc << 6) | val;
+    accBits += 6;
+    if (accBits >= 8) {
+      accBits -= 8;
+      out[o++] = (acc >> accBits) & 0xff;
+    }
+  }
+  return o === outLen ? out : out.subarray(0, o);
+}
+
+const utf8 = /* @__PURE__ */ new TextDecoder("utf-8");
+
+/**
+ * Minimal protobuf wire-format reader for PricingData frames.
+ * Pure JS — no Buffer/DataView host APIs beyond Uint8Array.
+ */
 export function decodePricingData(bytes: Uint8Array): Partial<StreamTick> {
-  const buf = Buffer.from(bytes);
   const out: Record<string, unknown> = {};
   let i = 0;
+  const len = bytes.length;
 
   const readVarint = (): bigint => {
-    let shift = 0;
+    let shift = 0n;
     let val = 0n;
     for (;;) {
-      const b = buf[i++];
-      val |= BigInt(b & 0x7f) << BigInt(shift);
-      shift += 7;
+      if (i >= len) throw new Error("protobuf: truncated varint");
+      const b = bytes[i++];
+      val |= BigInt(b & 0x7f) << shift;
+      shift += 7n;
       if ((b & 0x80) === 0) break;
-      if (shift > 70) throw new Error("protobuf varint too long");
+      if (shift > 70n) throw new Error("protobuf varint too long");
     }
     return val;
   };
 
-  while (i < buf.length) {
-    const tag = buf[i++];
+  while (i < len) {
+    const tag = bytes[i++];
     const field = tag >> 3;
     const wire = tag & 7;
 
     switch (wire) {
       case 0: {
+        // varint
         const raw = readVarint();
         // field 3 (time) is zigzag-encoded epoch ms in live frames
         if (field === 3) {
@@ -97,24 +145,32 @@ export function decodePricingData(bytes: Uint8Array): Partial<StreamTick> {
         break;
       }
       case 1: {
-        out[field] = buf.readDoubleLE(i);
+        // fixed64 → double
+        if (i + 8 > len) throw new Error("protobuf: truncated double");
+        const view = new DataView(bytes.buffer, bytes.byteOffset + i, 8);
+        out[field] = view.getFloat64(0, true);
         i += 8;
         break;
       }
       case 5: {
-        out[field] = buf.readFloatLE(i);
+        // fixed32 → float
+        if (i + 4 > len) throw new Error("protobuf: truncated float");
+        const view = new DataView(bytes.buffer, bytes.byteOffset + i, 4);
+        out[field] = view.getFloat32(0, true);
         i += 4;
         break;
       }
       case 2: {
-        const len = buf[i++];
-        out[field] = Buffer.from(buf.subarray(i, i + len)).toString("utf8");
-        i += len;
+        // length-delimited string/bytes
+        const strLen = Number(readVarint());
+        if (i + strLen > len) throw new Error("protobuf: truncated string");
+        out[field] = utf8.decode(bytes.subarray(i, i + strLen));
+        i += strLen;
         break;
       }
       default:
         // unknown wire type — cannot safely continue
-        i = buf.length;
+        i = len;
         break;
     }
   }
@@ -146,6 +202,7 @@ export function decodePricingData(bytes: Uint8Array): Partial<StreamTick> {
  * Parse a raw streamer message into ticks.
  * The streamer sends either a JSON array of base64 frames,
  * a raw base64 string, or a JSON object { id: "base64" }.
+ * Malformed frames are skipped — never fabricated.
  */
 export function parseStreamerMessage(raw: string): StreamTick[] {
   const text = raw.trim();
@@ -168,10 +225,14 @@ export function parseStreamerMessage(raw: string): StreamTick[] {
   const ticks: StreamTick[] = [];
   for (const frame of frames) {
     try {
-      const bytes = Buffer.from(frame, "base64");
-      if (bytes.length === 0) continue;
-      const decoded = decodePricingData(new Uint8Array(bytes));
-      if (typeof decoded.id === "string" && typeof decoded.price === "number" && Number.isFinite(decoded.price)) {
+      const bytes = base64ToBytes(frame);
+      if (!bytes || bytes.length === 0) continue;
+      const decoded = decodePricingData(bytes);
+      if (
+        typeof decoded.id === "string" &&
+        typeof decoded.price === "number" &&
+        Number.isFinite(decoded.price)
+      ) {
         ticks.push({
           id: decoded.id,
           price: decoded.price,

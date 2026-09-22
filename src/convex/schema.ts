@@ -356,6 +356,52 @@ const schema = defineSchema(
       closed: v.boolean(),
     }).index("by_symbol_interval", ["symbol", "interval", "time"]),
 
+    // ── Stock real-time stream relay (server-side) ─────
+    // One row per symbol. A "use node" action connects to the
+    // Yahoo streamer WebSocket server-side, normalizes ticks and
+    // writes them here; the frontend subscribes reactively so
+    // prices/charts update with no page refresh. Rows also carry
+    // relay health for the internal debug panel.
+    stockStream: defineTable({
+      symbol: v.string(), // normalized uppercase, e.g. "AAPL"
+      provider: v.string(), // e.g. "yahoo-streamer"
+      status: v.string(), // "connecting" | "live" | "reconnecting" | "error" | "stopped"
+
+      // Subscription lifecycle (client renews desiredAt every 60s)
+      desired: v.boolean(),
+      desiredAt: v.number(),
+      relayInstance: v.optional(v.string()),
+      relayStartedAt: v.optional(v.number()),
+      heartbeatAt: v.optional(v.number()),
+
+      // Latest normalized provider tick (present after first tick)
+      price: v.optional(v.number()),
+      change: v.optional(v.number()),
+      changePercent: v.optional(v.number()),
+      open: v.optional(v.number()),
+      previousClose: v.optional(v.number()),
+      dayHigh: v.optional(v.number()),
+      dayLow: v.optional(v.number()),
+      dayVolume: v.optional(v.number()),
+      bid: v.optional(v.number()),
+      ask: v.optional(v.number()),
+      marketHours: v.optional(v.number()),
+      currency: v.optional(v.string()),
+      exchange: v.optional(v.string()),
+      providerTime: v.optional(v.number()), // provider timestamp of the tick
+      receivedAt: v.optional(v.number()), // server receive time
+      feedDelayMs: v.optional(v.number()), // receivedAt - providerTime (freshness)
+
+      // Health / diagnostics
+      messagesReceived: v.number(), // raw WS messages received by backend
+      ticksWritten: v.number(), // normalized ticks written to this row
+      reconnectCount: v.number(),
+      lastError: v.optional(v.string()),
+      updatedAt: v.number(),
+    })
+      .index("by_symbol", ["symbol"])
+      .index("by_desired", ["desired", "desiredAt"]),
+
     // ── AI Trade Arena Tables ──────────────────────────
 
     // Arena Trades — demo trades executed by the AI engine
